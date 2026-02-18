@@ -87,10 +87,11 @@ def load_mesh(object, name):
     
     colors_list = [None] * MAX_VERTEX_COLORS
     if object.type == 'MESH':
+        override_count = object.original.data.malt_vertex_color_override_count
         for i in range(MAX_VERTEX_COLORS):
-            # Check override (only slots 0-3 have UI override properties)
+            # Check override (only visible slots have user-set values)
             override = ''
-            if i < 4:
+            if i < override_count:
                 override = getattr(object.original.data, f'malt_vertex_color_override_{i}')
             # Fall back to default naming convention
             if not override:
@@ -161,46 +162,90 @@ class MALT_OT_pick_color_attribute(bpy.types.Operator):
         context.window_manager.invoke_search_popup(self)
         return {'RUNNING_MODAL'}
 
+
+class MALT_OT_add_color_override(bpy.types.Operator):
+    bl_idname = 'malt.add_color_override'
+    bl_label = 'Add Override Field'
+    bl_description = (
+        "Max 9 Vertex Colors. Must be Face Corner. "
+        "Defaults to 'malt_vcol-0', 'malt_vcol-1', etc. "
+        "Add a field to override a slot with a different "
+        "Face Corner Color attribute."
+    )
+
+    def execute(self, context):
+        mesh = context.object.data
+        if mesh.malt_vertex_color_override_count >= MAX_VERTEX_COLORS:
+            self.report({'ERROR'}, f'Max fields already in use ({MAX_VERTEX_COLORS})')
+            return {'CANCELLED'}
+        mesh.malt_vertex_color_override_count += 1
+        return {'FINISHED'}
+
+
+class MALT_OT_remove_color_override(bpy.types.Operator):
+    bl_idname = 'malt.remove_color_override'
+    bl_label = 'Remove Override Field'
+    bl_description = 'Remove this vertex color override slot'
+
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        mesh = context.object.data
+        count = mesh.malt_vertex_color_override_count
+        # Shift slots above the removed one down by one
+        for i in range(self.index, count - 1):
+            src = getattr(mesh, f'malt_vertex_color_override_{i + 1}')
+            setattr(mesh, f'malt_vertex_color_override_{i}', src)
+        # Clear the now-vacant last slot and decrement
+        setattr(mesh, f'malt_vertex_color_override_{count - 1}', '')
+        mesh.malt_vertex_color_override_count -= 1
+        return {'FINISHED'}
+
+
 def draw_vertex_color_overrides(self, context):
     if context.scene.render.engine != 'MALT':
         return
     mesh = context.object.data
     self.layout.use_property_split = True
-    self.layout.label(text='Malt Vertex Colors')
-    def draw_color_override(key):
+    self.layout.label(text='Malt Vertex Color Overrides')
+
+    count = mesh.malt_vertex_color_override_count
+    for i in range(count):
+        key = f'malt_vertex_color_override_{i}'
         value = getattr(mesh, key)
         layout = self.layout
         if value in mesh.color_attributes and mesh.color_attributes[value].domain != 'CORNER':
             layout = self.layout.box()
             layout.label(text='Only Face Corner attributes are supported', icon='ERROR')
         row = layout.row(align=True)
-        row.prop(mesh, key, text='', icon='GROUP_VCOL')
+        row.prop(mesh, key, text=str(i), icon='GROUP_VCOL')
         op = row.operator('malt.pick_color_attribute', text='', icon='DOWNARROW_HLT')
         op.property_name = key
+        rm = row.operator('malt.remove_color_override', text='', icon='X')
+        rm.index = i
 
-    draw_color_override('malt_vertex_color_override_0')
-    draw_color_override('malt_vertex_color_override_1')
-    draw_color_override('malt_vertex_color_override_2')
-    draw_color_override('malt_vertex_color_override_3')
+    self.layout.operator('malt.add_color_override', icon='ADD')
 
 
 def register():
     bpy.utils.register_class(MALT_OT_pick_color_attribute)
-    bpy.types.Mesh.malt_vertex_color_override_0 = bpy.props.StringProperty(name='0',
-        options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
-    bpy.types.Mesh.malt_vertex_color_override_1 = bpy.props.StringProperty(name='1',
-        options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
-    bpy.types.Mesh.malt_vertex_color_override_2 = bpy.props.StringProperty(name='2',
-        options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
-    bpy.types.Mesh.malt_vertex_color_override_3 = bpy.props.StringProperty(name='3',
+    bpy.utils.register_class(MALT_OT_add_color_override)
+    bpy.utils.register_class(MALT_OT_remove_color_override)
+    for i in range(MAX_VERTEX_COLORS):
+        setattr(bpy.types.Mesh, f'malt_vertex_color_override_{i}',
+            bpy.props.StringProperty(name=str(i),
+                options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'}))
+    bpy.types.Mesh.malt_vertex_color_override_count = bpy.props.IntProperty(
+        name='Malt VCol Override Count', default=0, min=0, max=MAX_VERTEX_COLORS,
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
     bpy.types.DATA_PT_vertex_colors.append(draw_vertex_color_overrides)
 
 
 def unregister():
     bpy.types.DATA_PT_vertex_colors.remove(draw_vertex_color_overrides)
-    del bpy.types.Mesh.malt_vertex_color_override_0
-    del bpy.types.Mesh.malt_vertex_color_override_1
-    del bpy.types.Mesh.malt_vertex_color_override_2
-    del bpy.types.Mesh.malt_vertex_color_override_3
+    for i in range(MAX_VERTEX_COLORS):
+        delattr(bpy.types.Mesh, f'malt_vertex_color_override_{i}')
+    del bpy.types.Mesh.malt_vertex_color_override_count
+    bpy.utils.unregister_class(MALT_OT_remove_color_override)
+    bpy.utils.unregister_class(MALT_OT_add_color_override)
     bpy.utils.unregister_class(MALT_OT_pick_color_attribute)
