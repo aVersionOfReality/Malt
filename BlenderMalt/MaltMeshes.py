@@ -152,6 +152,27 @@ def load_mesh(object, name):
                         buf_ptr[j] = corner_data[j] / 255.0
                     ssbo_colors_list[i] = buf
 
+    vertex_count = len(m.vertices)
+
+    ssbo_vtx_colors_list = [None]*4
+    if object.type == 'MESH':
+        for i in range(4):
+            attr_name = f'malt_ssbo_vtx_{i}'
+            attribute = m.attributes.get(attr_name)
+            if attribute and attribute.domain == 'POINT':
+                if attribute.data_type == 'FLOAT_COLOR':
+                    vtx_data = (ctypes.c_float * (vertex_count * 4)).from_address(attribute.data[0].as_pointer())
+                    buf = get_load_buffer('ssbo_vtx_color'+str(i), ctypes.c_float, vertex_count * 4)
+                    ctypes.memmove(buf.buffer(), vtx_data, buf.size_in_bytes())
+                    ssbo_vtx_colors_list[i] = buf
+                elif attribute.data_type == 'BYTE_COLOR':
+                    vtx_data = (ctypes.c_uint8 * (vertex_count * 4)).from_address(attribute.data[0].as_pointer())
+                    buf = get_load_buffer('ssbo_vtx_color'+str(i), ctypes.c_float, vertex_count * 4)
+                    buf_ptr = ctypes.cast(buf.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for j in range(vertex_count * 4):
+                        buf_ptr[j] = vtx_data[j] / 255.0
+                    ssbo_vtx_colors_list[i] = buf
+
     mesh_data = {
         'positions': positions,
         'indices': indices,
@@ -160,6 +181,8 @@ def load_mesh(object, name):
         'tangents': tangents_buffer,
         'colors': colors_list,
         'ssbo_colors': ssbo_colors_list,
+        'ssbo_vtx_colors': ssbo_vtx_colors_list,
+        'vertex_count': vertex_count,
     }
 
     from . import MaltPipeline

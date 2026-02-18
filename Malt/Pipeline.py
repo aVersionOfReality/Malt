@@ -158,7 +158,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4):  
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4, ssbo_vtx_colors=[None]*4, vertex_count=0):  
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -184,6 +184,13 @@ class Pipeline():
                 ssbo.load_raw(ssbo_data.buffer(), ssbo_data.size_in_bytes())
                 ssbo_objects[i] = ssbo
 
+        ssbo_vtx_objects = [None]*4
+        for i, ssbo_data in enumerate(ssbo_vtx_colors):
+            if ssbo_data is not None and i < 4:
+                ssbo = SSBO()
+                ssbo.load_raw(ssbo_data.buffer(), ssbo_data.size_in_bytes())
+                ssbo_vtx_objects[i] = ssbo
+
         results = []
 
         for i, index in enumerate(indices):
@@ -206,6 +213,8 @@ class Pipeline():
             result.uvs = uv_vbos
             result.colors = color_vbos
             result.ssbo_list = ssbo_objects
+            result.ssbo_vertex_list = ssbo_vtx_objects
+            result.vertex_count = vertex_count
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -358,6 +367,7 @@ class Pipeline():
             _scale_group = None
             _color_is_srgb = None
             _ssbo_active = None
+            _ssbo_vtx_active = None
             
             meshes = scene_batches[material]
             for mesh in meshes.keys():
@@ -392,6 +402,17 @@ class Pipeline():
                         _ssbo_active = ssbo_active
                     for i, ssbo in enumerate(mesh.mesh.ssbo_list):
                         block_name = f'SSBO_DATA_{i}'
+                        if ssbo is not None and block_name in shader.storage_blocks:
+                            ssbo.bind(shader.storage_blocks[block_name])
+
+                if hasattr(mesh.mesh, 'ssbo_vertex_list'):
+                    ssbo_vtx_active = tuple(s is not None for s in mesh.mesh.ssbo_vertex_list)
+                    if ssbo_vtx_active != _ssbo_vtx_active:
+                        if 'SSBO_VTX_ACTIVE' in shader.uniforms:
+                            shader.uniforms['SSBO_VTX_ACTIVE'].bind(ssbo_vtx_active)
+                        _ssbo_vtx_active = ssbo_vtx_active
+                    for i, ssbo in enumerate(mesh.mesh.ssbo_vertex_list):
+                        block_name = f'SSBO_VTX_DATA_{i}'
                         if ssbo is not None and block_name in shader.storage_blocks:
                             ssbo.bind(shader.storage_blocks[block_name])
 

@@ -119,6 +119,8 @@ class MeshCustomLoad(Mesh):
         self.colors = []
         self.color_is_srgb = [False]*4
         self.ssbo_list = [None]*4
+        self.ssbo_vertex_list = [None]*4
+        self.vertex_count = 0
 
         self.index_count = 0
 

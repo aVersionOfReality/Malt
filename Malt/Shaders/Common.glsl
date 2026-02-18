@@ -58,6 +58,13 @@ layout(std430, binding = 1) buffer SSBO_DATA_1 { vec4 ssbo_data_1[]; };
 layout(std430, binding = 2) buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
 layout(std430, binding = 3) buffer SSBO_DATA_3 { vec4 ssbo_data_3[]; };
 
+uniform bvec4 SSBO_VTX_ACTIVE = bvec4(false);
+
+layout(std430, binding = 4) buffer SSBO_VTX_DATA_0 { vec4 ssbo_vtx_data_0[]; };
+layout(std430, binding = 5) buffer SSBO_VTX_DATA_1 { vec4 ssbo_vtx_data_1[]; };
+layout(std430, binding = 6) buffer SSBO_VTX_DATA_2 { vec4 ssbo_vtx_data_2[]; };
+layout(std430, binding = 7) buffer SSBO_VTX_DATA_3 { vec4 ssbo_vtx_data_3[]; };
+
 vertex_out vec3 IO_POSITION;
 vertex_out vec3 IO_NORMAL;
 vertex_out vec3 IO_TANGENT;
