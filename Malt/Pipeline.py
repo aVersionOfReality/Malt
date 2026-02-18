@@ -5,7 +5,7 @@ from Malt.Utils import LOG
 
 from Malt.GL.GL import *
 from Malt.GL.Mesh import Mesh, MeshCustomLoad
-from Malt.GL.Shader import Shader, UBO, shader_preprocessor
+from Malt.GL.Shader import Shader, UBO, SSBO, shader_preprocessor
 
 from Malt.Render import Common
 from Malt.PipelineParameters import *
@@ -158,7 +158,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[]):  
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4):  
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -176,6 +176,13 @@ class Pipeline():
         tangent_vbo = load_VBO(tangent) if tangent else None
         uv_vbos = [load_VBO(e) for e in uvs]
         color_vbos = [load_VBO(e) if e else None for e in colors]
+
+        ssbo_objects = [None]*4
+        for i, ssbo_data in enumerate(ssbo_colors):
+            if ssbo_data is not None and i < 4:
+                ssbo = SSBO()
+                ssbo.load_raw(ssbo_data.buffer(), ssbo_data.size_in_bytes())
+                ssbo_objects[i] = ssbo
 
         results = []
 
@@ -198,6 +205,7 @@ class Pipeline():
             result.tangent = tangent_vbo
             result.uvs = uv_vbos
             result.colors = color_vbos
+            result.ssbo_list = ssbo_objects
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -349,11 +357,12 @@ class Pipeline():
             _precomputed_tangents = None
             _scale_group = None
             _color_is_srgb = None
+            _ssbo_active = None
             
             meshes = scene_batches[material]
             for mesh in meshes.keys():
                 mesh.mesh.bind()
-                
+
                 double_sided = mesh.parameters['double_sided']
                 if double_sided != _double_sided:
                     _double_sided = double_sided
@@ -374,6 +383,17 @@ class Pipeline():
                     if _precomputed_tangents != precomputed_tangents:
                         _precomputed_tangents = precomputed_tangents
                         precomputed_tangents_uniform.bind(precomputed_tangents)
+
+                if hasattr(mesh.mesh, 'ssbo_list'):
+                    ssbo_active = tuple(s is not None for s in mesh.mesh.ssbo_list)
+                    if ssbo_active != _ssbo_active:
+                        if 'SSBO_ACTIVE' in shader.uniforms:
+                            shader.uniforms['SSBO_ACTIVE'].bind(ssbo_active)
+                        _ssbo_active = ssbo_active
+                    for i, ssbo in enumerate(mesh.mesh.ssbo_list):
+                        block_name = f'SSBO_DATA_{i}'
+                        if ssbo is not None and block_name in shader.storage_blocks:
+                            ssbo.bind(shader.storage_blocks[block_name])
 
                 for scale_group, batches in meshes[mesh].items():
                     if scale_group != _scale_group:

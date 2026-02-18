@@ -24,6 +24,7 @@ class Shader():
         self.uniforms = {}
         self.textures = {}
         self.uniform_blocks = {}
+        self.storage_blocks = {}
         if self.error == '':
             self.error = None
             self.uniforms = reflect_program_uniforms(self.program)
@@ -34,6 +35,7 @@ class Shader():
                     texture_index += 1 
                     self.textures[name] = None
             self.uniform_blocks = reflect_program_uniform_blocks(self.program)
+            self.storage_blocks = reflect_program_storage_blocks(self.program)
         elif self.error != 'NO SOURCE':
             LOG.error(self.error)
         
@@ -67,6 +69,8 @@ class Shader():
             new.textures[name] = texture
         for name, block in self.uniform_blocks.items():
             new.uniform_blocks[name] = block
+        for name, block in self.storage_blocks.items():
+            new.storage_blocks[name] = block
         
         return new
     
@@ -150,6 +154,39 @@ class UBO():
             self.location = location
             self.BINDS[location] = self
     
+    def __del__(self):
+        glDeleteBuffers(1, self.buffer[0])
+
+
+class SSBO():
+
+    BINDS = {}
+
+    def __init__(self):
+        self.size = 0
+        self.buffer = gl_buffer(GL_INT, 1)
+        self.location = None
+        glGenBuffers(1, self.buffer)
+
+    def load_data(self, data, usage=GL_STATIC_DRAW):
+        self.size = ctypes.sizeof(data)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.buffer[0])
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.size, ctypes.pointer(data), usage)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+    def load_raw(self, buffer_ptr, size_bytes, usage=GL_STATIC_DRAW):
+        self.size = size_bytes
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.buffer[0])
+        glBufferData(GL_SHADER_STORAGE_BUFFER, size_bytes, buffer_ptr, usage)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+    def bind(self, storage_block):
+        location = storage_block['bind']
+        if self.location != location or self.BINDS.get(location) != self:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, location, self.buffer[0])
+            self.location = location
+            self.BINDS[location] = self
+
     def __del__(self):
         glDeleteBuffers(1, self.buffer[0])
 
@@ -511,6 +548,31 @@ def reflect_program_uniform_blocks(program):
         }
     
     return blocks
+
+
+def reflect_program_storage_blocks(program):
+    block_count = gl_buffer(GL_INT, 1)
+    glGetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_ACTIVE_RESOURCES, block_count)
+
+    max_string_length = 128
+    block_name = gl_buffer(GL_BYTE, max_string_length)
+    props = (GLenum * 2)(GL_BUFFER_BINDING, GL_BUFFER_DATA_SIZE)
+    values = gl_buffer(GL_INT, 2)
+
+    blocks = {}
+    for i in range(block_count[0]):
+        length = gl_buffer(GL_INT, 1)
+        glGetProgramResourceName(program, GL_SHADER_STORAGE_BLOCK, i, max_string_length, length, block_name)
+        name = buffer_to_string(block_name)
+        glGetProgramResourceiv(program, GL_SHADER_STORAGE_BLOCK, i, 2, props, 2, NULL, values)
+        blocks[name] = {
+            'bind': values[0],
+            'size': values[1],
+            'name': name,
+        }
+
+    return blocks
+
 
 USE_GLSLANG_VALIDATOR = False
 

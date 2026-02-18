@@ -49,6 +49,15 @@ layout(std140) uniform BATCH_IDS
 };
 #define BATCH_ID(index) BATCH_ID[(index)/4][(index)%4]
 
+flat vertex_out int IO_VERTEX_ID;
+
+uniform bvec4 SSBO_ACTIVE = bvec4(false);
+
+layout(std430, binding = 0) buffer SSBO_DATA_0 { vec4 ssbo_data_0[]; };
+layout(std430, binding = 1) buffer SSBO_DATA_1 { vec4 ssbo_data_1[]; };
+layout(std430, binding = 2) buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
+layout(std430, binding = 3) buffer SSBO_DATA_3 { vec4 ssbo_data_3[]; };
+
 vertex_out vec3 IO_POSITION;
 vertex_out vec3 IO_NORMAL;
 vertex_out vec3 IO_TANGENT;
@@ -97,6 +106,7 @@ void DEFAULT_VERTEX_SHADER()
 {
     MODEL = BATCH_MODEL[gl_InstanceID];
     ID = uvec4(BATCH_ID(gl_InstanceID),0,0,0);
+    IO_VERTEX_ID = gl_VertexID;
 
     POSITION = transform_point(MODEL, in_position);
     NORMAL = transform_normal(MODEL, in_normal);

@@ -159,6 +159,26 @@ void Vertex_Color(
 
 #endif //NO_VERTEX_COLOR_INPUT
 
+#ifndef NO_SSBO_COLOR_INPUT
+
+/*  META
+    @meta: subcategory=SSBO;
+    @Index: min=0; max=3;
+*/
+void SSBO_Color(
+    int Index,
+    out vec4 Color
+)
+{
+    Color = vec4(0);
+    if(Index == 0 && SSBO_ACTIVE[0]) Color = ssbo_data_0[IO_VERTEX_ID];
+    else if(Index == 1 && SSBO_ACTIVE[1]) Color = ssbo_data_1[IO_VERTEX_ID];
+    else if(Index == 2 && SSBO_ACTIVE[2]) Color = ssbo_data_2[IO_VERTEX_ID];
+    else if(Index == 3 && SSBO_ACTIVE[3]) Color = ssbo_data_3[IO_VERTEX_ID];
+}
+
+#endif //NO_SSBO_COLOR_INPUT
+
 #ifndef NO_ID_INPUT
 
 /*  META

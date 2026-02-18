@@ -103,6 +103,55 @@ def load_mesh(object, name):
                 ctypes.memmove(color_buffer.buffer(), color, color_buffer.size_in_bytes())
                 colors_list[i] = color_buffer
 
+    ssbo_colors_list = [None]*4
+    if object.type == 'MESH':
+        for i in range(4):
+            attr_name = f'malt_ssbo_{i}'
+            attribute = m.attributes.get(attr_name)
+            if attribute and attribute.domain == 'FACE':
+                if attribute.data_type == 'FLOAT_COLOR':
+                    face_data = (ctypes.c_float * (len(m.polygons) * 4)).from_address(attribute.data[0].as_pointer())
+                    expanded = get_load_buffer('ssbo_color'+str(i), ctypes.c_float, loop_count * 4)
+                    expanded_ptr = ctypes.cast(expanded.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for poly in m.polygons:
+                        fi = poly.index
+                        r, g, b, a = face_data[fi*4], face_data[fi*4+1], face_data[fi*4+2], face_data[fi*4+3]
+                        for j in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                            expanded_ptr[j*4]   = r
+                            expanded_ptr[j*4+1] = g
+                            expanded_ptr[j*4+2] = b
+                            expanded_ptr[j*4+3] = a
+                    ssbo_colors_list[i] = expanded
+                elif attribute.data_type == 'BYTE_COLOR':
+                    face_data = (ctypes.c_uint8 * (len(m.polygons) * 4)).from_address(attribute.data[0].as_pointer())
+                    expanded = get_load_buffer('ssbo_color'+str(i), ctypes.c_float, loop_count * 4)
+                    expanded_ptr = ctypes.cast(expanded.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for poly in m.polygons:
+                        fi = poly.index
+                        r = face_data[fi*4]   / 255.0
+                        g = face_data[fi*4+1] / 255.0
+                        b = face_data[fi*4+2] / 255.0
+                        a = face_data[fi*4+3] / 255.0
+                        for j in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                            expanded_ptr[j*4]   = r
+                            expanded_ptr[j*4+1] = g
+                            expanded_ptr[j*4+2] = b
+                            expanded_ptr[j*4+3] = a
+                    ssbo_colors_list[i] = expanded
+            elif attribute and attribute.domain == 'CORNER':
+                if attribute.data_type == 'FLOAT_COLOR':
+                    corner_data = (ctypes.c_float * (loop_count * 4)).from_address(attribute.data[0].as_pointer())
+                    buf = get_load_buffer('ssbo_color'+str(i), ctypes.c_float, loop_count * 4)
+                    ctypes.memmove(buf.buffer(), corner_data, buf.size_in_bytes())
+                    ssbo_colors_list[i] = buf
+                elif attribute.data_type == 'BYTE_COLOR':
+                    corner_data = (ctypes.c_uint8 * (loop_count * 4)).from_address(attribute.data[0].as_pointer())
+                    buf = get_load_buffer('ssbo_color'+str(i), ctypes.c_float, loop_count * 4)
+                    buf_ptr = ctypes.cast(buf.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for j in range(loop_count * 4):
+                        buf_ptr[j] = corner_data[j] / 255.0
+                    ssbo_colors_list[i] = buf
+
     mesh_data = {
         'positions': positions,
         'indices': indices,
@@ -110,6 +159,7 @@ def load_mesh(object, name):
         'uvs': uvs_list,
         'tangents': tangents_buffer,
         'colors': colors_list,
+        'ssbo_colors': ssbo_colors_list,
     }
 
     from . import MaltPipeline

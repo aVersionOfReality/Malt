@@ -10,5 +10,6 @@ def load_mesh(pipeline, msg):
         normal = data['normals'],
         tangent = data['tangents'],
         uvs = data['uvs'],
-        colors = data['colors']
+        colors = data['colors'],
+        ssbo_colors = data.get('ssbo_colors', [None]*4)
     )
