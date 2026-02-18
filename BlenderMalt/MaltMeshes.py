@@ -129,6 +129,28 @@ def reset_meshes():
     global MESHES
     MESHES = {}
 
+class MALT_OT_pick_color_attribute(bpy.types.Operator):
+    bl_idname = 'malt.pick_color_attribute'
+    bl_label = 'Pick Color Attribute'
+    bl_property = 'attribute_name'
+
+    property_name: bpy.props.StringProperty()
+    attribute_name: bpy.props.EnumProperty(
+        items=lambda self, context: [
+            (attr.name, attr.name, '')
+            for attr in context.object.data.color_attributes
+            if attr.domain == 'CORNER'
+        ] or [('', 'No CORNER color attributes', '')]
+    )
+
+    def execute(self, context):
+        setattr(context.object.data, self.property_name, self.attribute_name)
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {'RUNNING_MODAL'}
+
 def draw_vertex_color_overrides(self, context):
     if context.scene.render.engine != 'MALT':
         return
@@ -141,7 +163,10 @@ def draw_vertex_color_overrides(self, context):
         if value in mesh.color_attributes and mesh.color_attributes[value].domain != 'CORNER':
             layout = self.layout.box()
             layout.label(text='Only Face Corner attributes are supported', icon='ERROR')
-        layout.prop_search(mesh, key, mesh, 'color_attributes')    
+        row = layout.row(align=True)
+        row.prop(mesh, key, text='', icon='GROUP_VCOL')
+        op = row.operator('malt.pick_color_attribute', text='', icon='DOWNARROW_HLT')
+        op.property_name = key
 
     draw_color_override('malt_vertex_color_override_0')
     draw_color_override('malt_vertex_color_override_1')
@@ -150,6 +175,7 @@ def draw_vertex_color_overrides(self, context):
 
 
 def register():
+    bpy.utils.register_class(MALT_OT_pick_color_attribute)
     bpy.types.Mesh.malt_vertex_color_override_0 = bpy.props.StringProperty(name='0',
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
     bpy.types.Mesh.malt_vertex_color_override_1 = bpy.props.StringProperty(name='1',
@@ -167,3 +193,4 @@ def unregister():
     del bpy.types.Mesh.malt_vertex_color_override_1
     del bpy.types.Mesh.malt_vertex_color_override_2
     del bpy.types.Mesh.malt_vertex_color_override_3
+    bpy.utils.unregister_class(MALT_OT_pick_color_attribute)
