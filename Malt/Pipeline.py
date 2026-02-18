@@ -214,7 +214,7 @@ class Pipeline():
                 bind_VBO(result.tangent, 2, 4)
             
             max_uv = 4
-            max_vertex_colors = 4
+            max_vertex_colors = 9
             uv0_index = 3
             color0_index = uv0_index + max_uv
             for i, uv in enumerate(result.uvs):
@@ -363,11 +363,14 @@ class Pipeline():
                         glEnable(GL_CULL_FACE)
                         glCullFace(GL_BACK)
                 
-                color_is_srgb = tuple(mesh.mesh.color_is_srgb)
-                if color_is_srgb != _color_is_srgb :
+                srgb_mask = 0
+                for _i, _v in enumerate(mesh.mesh.color_is_srgb):
+                    if _v:
+                        srgb_mask |= (1 << _i)
+                if srgb_mask != _color_is_srgb:
                     if 'COLOR_IS_SRGB' in shader.uniforms:
-                        shader.uniforms['COLOR_IS_SRGB'].bind(color_is_srgb)
-                        _color_is_srgb = color_is_srgb
+                        shader.uniforms['COLOR_IS_SRGB'].bind(srgb_mask)
+                        _color_is_srgb = srgb_mask
 
                 if precomputed_tangents_uniform:
                     precomputed_tangents = mesh.parameters['precomputed_tangents']

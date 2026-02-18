@@ -26,7 +26,7 @@ struct Vertex
     vec3 tangent;
     vec3 bitangent;
     vec2 uv[4];
-    vec4 color[4];
+    vec4 color[MAX_VERTEX_COLORS];
 };
 
 /*  META

@@ -1,6 +1,8 @@
 import ctypes
 import bpy
 
+MAX_VERTEX_COLORS = 9
+
 MESHES = {}
 
 def get_mesh_name(object):
@@ -83,13 +85,21 @@ def load_mesh(object, name):
                 uv_buffer.buffer(),
                 tangents_buffer.buffer())
     
-    colors_list = [None]*4
+    colors_list = [None] * MAX_VERTEX_COLORS
     if object.type == 'MESH':
-        for i in range(4):
-            override = getattr(object.original.data, f'malt_vertex_color_override_{i}')
+        for i in range(MAX_VERTEX_COLORS):
+            # Check override (only slots 0-3 have UI override properties)
+            override = ''
+            if i < 4:
+                override = getattr(object.original.data, f'malt_vertex_color_override_{i}')
+            # Fall back to default naming convention
+            if not override:
+                default_name = f'malt_vcol-{i}'
+                if default_name in m.color_attributes:
+                    override = default_name
+            if not override:
+                continue
             attribute = m.color_attributes.get(override)
-            #if attribute is None and i < len(m.color_attributes):
-            #    attribute = m.color_attributes[i]
             if attribute and attribute.domain == 'CORNER':
                 type = None
                 if attribute.data_type == 'BYTE_COLOR':

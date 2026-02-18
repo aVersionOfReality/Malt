@@ -2,6 +2,8 @@ import ctypes
 
 from Malt.GL.GL import *
 
+MAX_VERTEX_COLORS = 9
+
 class Mesh():
 
     def __init__(self, position, index, normal=None, tangent=None, uvs=[], colors=[]):
@@ -10,7 +12,7 @@ class Mesh():
         self.tangent = None
         self.uvs = []
         self.colors = []
-        self.color_is_srgb = [False]*4
+        self.color_is_srgb = [False]*MAX_VERTEX_COLORS
 
         self.index_count = len(index)
 
@@ -73,6 +75,8 @@ class Mesh():
             assert(i < max_uv)
             bind_VBO(uv, uv0_index + i, 2)
         for i, color in enumerate(self.colors):
+            if color0_index + i >= 16:
+                break
             bind_VBO(color, color0_index + i, 4)
 
         glBindVertexArray(0)
@@ -117,7 +121,7 @@ class MeshCustomLoad(Mesh):
         self.tangent = None
         self.uvs = []
         self.colors = []
-        self.color_is_srgb = [False]*4
+        self.color_is_srgb = [False]*MAX_VERTEX_COLORS
 
         self.index_count = 0
 
