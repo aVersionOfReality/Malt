@@ -142,10 +142,16 @@ def unload_mesh(object):
     MESHES[get_mesh_name(object)] = None
 
 def unload_mesh_data(mesh_data):
-    """Unload all objects that use the given mesh data block."""
+    """Invalidate cached mesh entries for all objects using mesh_data."""
+    # Fast path: objects with no modifiers share the key 'MESH_<data name>'
+    direct_key = 'MESH_' + mesh_data.name_full
+    if direct_key in MESHES:
+        MESHES[direct_key] = None
+    # Slow path: objects with modifiers use their own object name as key —
+    # only iterate objects that both use this mesh AND have modifiers
     for obj in bpy.data.objects:
-        if obj.data == mesh_data:
-            unload_mesh(obj)
+        if obj.data is mesh_data and len(obj.modifiers) > 0:
+            MESHES[get_mesh_name(obj)] = None
 
 def reset_meshes():
     global MESHES
