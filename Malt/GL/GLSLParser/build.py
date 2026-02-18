@@ -9,7 +9,8 @@ try: os.mkdir(build_dir)
 except: pass
 
 if platform.system() == 'Windows': #Multi-config generators, like Visual Studio
-    subprocess.check_call(['cmake', '-A', 'x64', '..'], cwd=build_dir)
+    ##subprocess.check_call(['cmake', '-A', 'x64', '..'], cwd=build_dir)
+    subprocess.check_call(['cmake', '-A', 'x64', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5', '..'], cwd=build_dir)
     subprocess.check_call(['cmake', '--build', '.', '--config', 'Release'], cwd=build_dir)
 else: #Single-config generators
     subprocess.check_call(['cmake', '..'], cwd=build_dir)
