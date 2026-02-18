@@ -141,6 +141,12 @@ def get_load_buffer(name, ctype, size):
 def unload_mesh(object):
     MESHES[get_mesh_name(object)] = None
 
+def unload_mesh_data(mesh_data):
+    """Unload all objects that use the given mesh data block."""
+    for obj in bpy.data.objects:
+        if obj.data == mesh_data:
+            unload_mesh(obj)
+
 def reset_meshes():
     global MESHES
     MESHES = {}
@@ -270,19 +276,24 @@ def draw_vertex_color_overrides(self, context):
     self.layout.operator('malt.add_color_override', icon='ADD')
 
 
+def _vcol_override_update(self, context):
+    unload_mesh_data(self)
+
 def register():
     bpy.utils.register_class(MALT_OT_pick_color_attribute)
     bpy.utils.register_class(MALT_OT_add_color_override)
     bpy.utils.register_class(MALT_OT_remove_color_override)
     for i in range(MAX_VERTEX_COLORS):
         setattr(bpy.types.Mesh, f'malt_vertex_color_override_{i}',
-            bpy.props.StringProperty(name=str(i),
+            bpy.props.StringProperty(name=str(i), update=_vcol_override_update,
                 options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'}))
         setattr(bpy.types.Mesh, f'malt_vertex_color_override_index_{i}',
             bpy.props.IntProperty(name=str(i), default=i, min=0, max=MAX_VERTEX_COLORS - 1,
+                update=_vcol_override_update,
                 options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'}))
     bpy.types.Mesh.malt_vertex_color_override_count = bpy.props.IntProperty(
         name='Malt VCol Override Count', default=0, min=0, max=MAX_VERTEX_COLORS,
+        update=_vcol_override_update,
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
     bpy.types.DATA_PT_vertex_colors.append(draw_vertex_color_overrides)
 
