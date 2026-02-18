@@ -6,6 +6,7 @@ from Malt.Utils import LOG
 from Malt.GL.GL import *
 from Malt.GL.Mesh import Mesh, MeshCustomLoad
 from Malt.GL.Shader import Shader, UBO, SSBO, shader_preprocessor
+from Malt.GL.ComputeShader import ComputeShader
 
 from Malt.Render import Common
 from Malt.PipelineParameters import *
@@ -140,7 +141,11 @@ class Pipeline():
         vertex_src = shader_preprocessor(source, include_paths + self.SHADER_INCLUDE_PATHS, defines + ['VERTEX_SHADER'])
         pixel_src = shader_preprocessor(source, include_paths + self.SHADER_INCLUDE_PATHS, defines + ['PIXEL_SHADER'])
         return Shader(vertex_src, pixel_src)
-            
+
+    def compile_compute_shader_from_source(self, source, include_paths=[], defines=[]):
+        compute_src = shader_preprocessor(source, include_paths + self.SHADER_INCLUDE_PATHS, defines + ['COMPUTE_SHADER'])
+        return ComputeShader(compute_src)
+
     def compile_material_from_source(self, material_type, source, include_paths=[]):
         return self.graphs[material_type].compile_material(source, include_paths)
     
