@@ -89,6 +89,7 @@ class Pipeline():
         return result
 
     def setup_resources(self):
+        self.test_sine_wave = True  # Set True to apply sine wave to all meshes
         self.common_buffer = Common.CommonBuffer()
         positions=[
              1.0,  1.0, 0.0,
@@ -163,7 +164,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4, ssbo_vtx_colors=[None]*4, vertex_count=0):  
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4, ssbo_vtx_colors=[None]*4, vertex_count=0, loop_count=0, rest_positions=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -177,6 +178,15 @@ class Pipeline():
             return VBO
 
         position_vbo = load_VBO(position)
+
+        # Deformed position buffer: same size as position_vbo, GPU-writable.
+        # Compute shaders write here each frame; the VAO reads from it via in_position.
+        deformed_position_buffer = gl_buffer(GL_INT, 1)
+        glGenBuffers(1, deformed_position_buffer)
+        glBindBuffer(GL_ARRAY_BUFFER, deformed_position_buffer[0])
+        glBufferData(GL_ARRAY_BUFFER, position.size_in_bytes(), position.buffer(), GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
         normal_vbo = load_VBO(normal)
         tangent_vbo = load_VBO(tangent) if tangent else None
         uv_vbos = [load_VBO(e) for e in uvs]
@@ -195,6 +205,11 @@ class Pipeline():
                 ssbo = SSBO()
                 ssbo.load_raw(ssbo_data.buffer(), ssbo_data.size_in_bytes())
                 ssbo_vtx_objects[i] = ssbo
+
+        rest_position_ssbo = None
+        if rest_positions is not None:
+            rest_position_ssbo = SSBO()
+            rest_position_ssbo.load_raw(rest_positions.buffer(), rest_positions.size_in_bytes())
 
         results = []
 
@@ -220,13 +235,16 @@ class Pipeline():
             result.ssbo_list = ssbo_objects
             result.ssbo_vertex_list = ssbo_vtx_objects
             result.vertex_count = vertex_count
+            result.loop_count = loop_count
+            result.rest_position_ssbo = rest_position_ssbo
+            result.deformed_position_buffer = deformed_position_buffer
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
                 glEnableVertexAttribArray(index)
                 glVertexAttribPointer(index, element_size, gl_type, gl_normalize, 0, None)
             
-            bind_VBO(result.position, 0, 3)
+            bind_VBO(result.deformed_position_buffer, 0, 3)
             if position.size_in_bytes() == normal.size_in_bytes():
                 bind_VBO(result.normal, 1, 3)
             else:
@@ -346,6 +364,66 @@ class Pipeline():
             
         return result
     
+    _sine_wave_shader = None
+
+    def _get_sine_wave_shader(self):
+        if Pipeline._sine_wave_shader is None:
+            shader_path = path.join(SHADER_DIR, 'Compute', 'sine_wave.glsl')
+            with open(shader_path, 'r') as f:
+                source = f.read()
+            processed = shader_preprocessor(source, [SHADER_DIR], ['COMPUTE_SHADER'])
+            Pipeline._sine_wave_shader = ComputeShader(processed)
+            if Pipeline._sine_wave_shader.error:
+                LOG.error(f"Sine wave compute shader error:\n{Pipeline._sine_wave_shader.error}")
+                Pipeline._sine_wave_shader = None
+        return Pipeline._sine_wave_shader
+
+    def run_compute_pass(self, scene_batches):
+        """Dispatch compute shaders for all meshes that have one assigned.
+
+        Call this before draw_scene_pass(). The memory barrier issued at the
+        end ensures the deformed position buffer writes are visible to the
+        subsequent vertex shader reads via in_position.
+
+        During development, meshes with a truthy 'use_sine_wave' attribute
+        will use the built-in sine wave test shader.
+        """
+        any_dispatched = False
+
+        for material, meshes in scene_batches.items():
+            for mesh_key in meshes.keys():
+                m = mesh_key.mesh
+                if not hasattr(m, 'deformed_position_buffer') or m.deformed_position_buffer is None:
+                    continue
+                if not hasattr(m, 'rest_position_ssbo') or m.rest_position_ssbo is None:
+                    continue
+
+                # Resolve which compute shader to use.
+                compute_shader = getattr(m, 'compute_shader', None)
+                if compute_shader is None and self.test_sine_wave:
+                    compute_shader = self._get_sine_wave_shader()
+                if compute_shader is None:
+                    continue
+
+                compute_shader.bind()
+
+                if 'TIME' in compute_shader.uniforms:
+                    compute_shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
+
+                # Bind rest positions (read) and deformed positions (write).
+                # Binding points 8 and 9 are reserved for compute I/O to avoid
+                # clashing with the existing corner/vertex SSBO bindings (0-7).
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
+
+                workgroup_size = 64
+                workgroups = math.ceil(m.loop_count / workgroup_size)
+                compute_shader.dispatch(workgroups)
+                any_dispatched = True
+
+        if any_dispatched:
+            glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT)
+
     def draw_scene_pass(self, render_target, scene_batches, pass_name=None, default_shader=None, shader_resources={}, depth_test_function=GL_LEQUAL):
         glDisable(GL_BLEND)
         glEnable(GL_DEPTH_TEST)

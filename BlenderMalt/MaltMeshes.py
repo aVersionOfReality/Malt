@@ -58,9 +58,14 @@ def load_mesh(object, name):
         to_ptr(m.loop_triangle_polygons[0].as_pointer(), ctypes.c_int), loop_tri_count,
         attribute_ptr("material_index", ctypes.c_int),
         positions.buffer(), indices_ptrs, indices_lengths)
-    
+
     for i in range(material_count):
         indices[i]._size = indices_lengths[i]
+
+    # Rest positions: a read-only copy of the loop-indexed positions uploaded
+    # as an SSBO so compute shaders can read the undeformed positions each frame.
+    rest_positions = get_load_buffer('rest_positions', ctypes.c_float, loop_count * 3)
+    ctypes.memmove(rest_positions.buffer(), positions.buffer(), rest_positions.size_in_bytes())
 
     normals = get_load_buffer('normals', ctypes.c_float, (loop_count * 3))
     ctypes.memmove(normals.buffer(), m.corner_normals[0].as_pointer(), normals.size_in_bytes())
@@ -183,6 +188,8 @@ def load_mesh(object, name):
         'ssbo_colors': ssbo_colors_list,
         'ssbo_vtx_colors': ssbo_vtx_colors_list,
         'vertex_count': vertex_count,
+        'loop_count': loop_count,
+        'rest_positions': rest_positions,
     }
 
     from . import MaltPipeline

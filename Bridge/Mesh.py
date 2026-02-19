@@ -13,5 +13,7 @@ def load_mesh(pipeline, msg):
         colors = data['colors'],
         ssbo_colors = data.get('ssbo_colors', [None]*4),
         ssbo_vtx_colors = data.get('ssbo_vtx_colors', [None]*4),
-        vertex_count = data.get('vertex_count', 0)
+        vertex_count = data.get('vertex_count', 0),
+        loop_count = data.get('loop_count', 0),
+        rest_positions = data.get('rest_positions', None)
     )
