@@ -125,6 +125,7 @@ class MeshCustomLoad(Mesh):
         self.rest_position_ssbo = None
         self.deformed_position_buffer = None
         self.corner_vert_ssbo = None
+        self.normals_ssbo = None
 
         self.index_count = 0
 

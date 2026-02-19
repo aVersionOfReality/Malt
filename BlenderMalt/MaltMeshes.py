@@ -197,6 +197,7 @@ def load_mesh(object, name):
         'loop_count': loop_count,
         'rest_positions': rest_positions,
         'corner_vert': corner_vert,
+        'normals_ssbo': normals,  # same buffer reused as SSBO (binding 11)
     }
 
     from . import MaltPipeline

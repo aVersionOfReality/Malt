@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4, ssbo_vtx_colors=[None]*4, vertex_count=0, loop_count=0, rest_positions=None, corner_vert=None):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4, ssbo_vtx_colors=[None]*4, vertex_count=0, loop_count=0, rest_positions=None, corner_vert=None, normals_ssbo=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -215,6 +215,11 @@ class Pipeline():
             corner_vert_ssbo = SSBO()
             corner_vert_ssbo.load_raw(corner_vert.buffer(), corner_vert.size_in_bytes())
 
+        normals_ssbo_obj = None
+        if normals_ssbo is not None:
+            normals_ssbo_obj = SSBO()
+            normals_ssbo_obj.load_raw(normals_ssbo.buffer(), normals_ssbo.size_in_bytes())
+
         results = []
 
         for i, index in enumerate(indices):
@@ -243,6 +248,7 @@ class Pipeline():
             result.rest_position_ssbo = rest_position_ssbo
             result.deformed_position_buffer = deformed_position_buffer
             result.corner_vert_ssbo = corner_vert_ssbo
+            result.normals_ssbo = normals_ssbo_obj
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -383,8 +389,6 @@ class Pipeline():
                 m = mesh_key.mesh
                 if not hasattr(m, 'deformed_position_buffer') or m.deformed_position_buffer is None:
                     continue
-                if not hasattr(m, 'rest_position_ssbo') or m.rest_position_ssbo is None:
-                    continue
 
                 compute_shader = getattr(m, 'compute_shader', None)
                 if compute_shader is None:
@@ -397,14 +401,32 @@ class Pipeline():
                 if 'TIME' in compute_shader.uniforms:
                     compute_shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
 
-                # Bind standard compute SSBOs at reserved binding points:
-                #   8  = rest positions   (read-only, loop-indexed vec3[])
-                #   9  = deformed positions (read-write, loop-indexed vec3[])
-                #   10 = corner_vert       (read-only, loop→vertex int[])
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
+                # Bind mesh attribute SSBOs at standard binding points.
+                # Bindings 0–7 mirror the render pass (loop-domain and vertex-domain vec4 attributes).
+                # Bindings 8–11 are compute-specific:
+                #   8  = rest_positions  (reserved for future GPU skinning, currently unused)
+                #   9  = deformed_positions (loop-indexed vec3[], read-write — current pos in/out)
+                #   10 = corner_vert     (loop-indexed int[], loop→vertex mapping)
+                #   11 = normals         (loop-indexed vec3[], read-only current normals)
+
+                # Loop-domain color SSBOs (bindings 0–3)
+                for i, ssbo in enumerate(m.ssbo_list):
+                    if ssbo is not None:
+                        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
+
+                # Vertex-domain SSBOs (bindings 4–7)
+                for i, ssbo in enumerate(m.ssbo_vertex_list):
+                    if ssbo is not None:
+                        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4 + i, ssbo.buffer[0])
+
+                # Compute-specific SSBOs
+                if hasattr(m, 'rest_position_ssbo') and m.rest_position_ssbo is not None:
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
                 if m.corner_vert_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m.corner_vert_ssbo.buffer[0])
+                if hasattr(m, 'normals_ssbo') and m.normals_ssbo is not None:
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m.normals_ssbo.buffer[0])
 
                 workgroup_size = 64
                 workgroups = math.ceil(m.loop_count / workgroup_size)

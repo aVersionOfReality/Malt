@@ -16,5 +16,6 @@ def load_mesh(pipeline, msg):
         vertex_count = data.get('vertex_count', 0),
         loop_count = data.get('loop_count', 0),
         rest_positions = data.get('rest_positions', None),
-        corner_vert = data.get('corner_vert', None)
+        corner_vert = data.get('corner_vert', None),
+        normals_ssbo = data.get('normals_ssbo', None),
     )

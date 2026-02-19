@@ -2,9 +2,12 @@
 // Included automatically by the Compute graph's default_global_scope.
 //
 // Binding point reservations (must not be used by individual compute shaders):
-//   8  = REST_POSITIONS      — loop-indexed vec3[], read-only undeformed positions
-//   9  = DEFORMED_POSITIONS  — loop-indexed vec3[], read-write deformed positions
-//   10 = CORNER_VERT         — loop-indexed int[], maps each loop to its unique vertex index
+//   0–3  = SSBO_DATA_0–3        — loop-domain vec4[] (face corner color attributes)
+//   4–7  = SSBO_VTX_DATA_0–3   — vertex-domain vec4[] (vertex attributes, indexed via corner_vert)
+//   8    = rest_positions        — reserved for future GPU skinning (currently unused)
+//   9    = deformed_positions    — loop-indexed vec3[], read-write; current position in and out
+//   10   = corner_vert           — loop-indexed int[], maps each loop to its unique vertex index
+//   11   = normals               — loop-indexed vec3[], read-only current normals
 //
 // Every .compute.glsl node tree must implement:
 //   void COMPUTE_SHADER(uint loop_index)
@@ -17,16 +20,29 @@
 
 layout(local_size_x = 64) in;
 
-layout(std430, binding = 8) readonly buffer REST_POSITIONS {
-    vec3 rest_positions[];
-};
+// Loop-domain color/attribute SSBOs (match render pass bindings 0–3)
+layout(std430, binding = 0) buffer SSBO_DATA_0 { vec4 ssbo_data_0[]; };
+layout(std430, binding = 1) buffer SSBO_DATA_1 { vec4 ssbo_data_1[]; };
+layout(std430, binding = 2) buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
+layout(std430, binding = 3) buffer SSBO_DATA_3 { vec4 ssbo_data_3[]; };
 
+// Vertex-domain SSBOs (match render pass bindings 4–7, indexed via corner_vert)
+layout(std430, binding = 4) buffer SSBO_VTX_DATA_0 { vec4 ssbo_vtx_data_0[]; };
+layout(std430, binding = 5) buffer SSBO_VTX_DATA_1 { vec4 ssbo_vtx_data_1[]; };
+layout(std430, binding = 6) buffer SSBO_VTX_DATA_2 { vec4 ssbo_vtx_data_2[]; };
+layout(std430, binding = 7) buffer SSBO_VTX_DATA_3 { vec4 ssbo_vtx_data_3[]; };
+
+// Compute-specific SSBOs (bindings 8–11)
 layout(std430, binding = 9) buffer DEFORMED_POSITIONS {
     vec3 deformed_positions[];
 };
 
 layout(std430, binding = 10) readonly buffer CORNER_VERT {
     int corner_vert[];
+};
+
+layout(std430, binding = 11) readonly buffer NORMALS {
+    vec3 normals[];
 };
 
 uniform uint LOOP_COUNT = 0u;
