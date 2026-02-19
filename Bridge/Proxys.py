@@ -52,7 +52,31 @@ class MaterialProxy(Material):
         self.path = path
         self.shader_parameters = shader_parameters
         super().__init__(None, parameters)
-    
+
     def resolve(self):
         import Bridge.Material
         self.shader = Bridge.Material.get_shader(self.path, self.shader_parameters)
+
+
+class ComputeShaderProxy():
+    """Proxy that assigns a compiled ComputeShader to a MeshCustomLoad.
+
+    Created on the Blender side (client process) and resolved on the server
+    side, where it sets mesh.compute_shader so run_compute_pass() picks it up.
+    """
+
+    def __init__(self, mesh_name, submesh_index, compute_path):
+        self.mesh_name = mesh_name
+        self.submesh_index = submesh_index
+        self.compute_path = compute_path
+
+    def resolve(self):
+        import Bridge.Mesh
+        import Bridge.ComputeMaterial
+        meshes = Bridge.Mesh.MESHES.get(self.mesh_name)
+        if not meshes:
+            return
+        mesh = meshes[self.submesh_index]
+        if mesh is None:
+            return
+        mesh.compute_shader = Bridge.ComputeMaterial.get_compute_shader(self.compute_path)

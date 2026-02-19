@@ -185,6 +185,10 @@ def reset_materials():
     global _MATERIALS
     _MATERIALS = {}
 
+def reset_compute_materials():
+    global _COMPUTE_MATERIALS
+    _COMPUTE_MATERIALS = {}
+
 import time
 __TIMESTAMP = time.time()
 
@@ -241,15 +245,71 @@ def track_shader_changes(force_update=False, async_compilation=True):
     return 0.1 #Track again in 0.1 second
     
 
+_COMPUTE_MATERIALS = {}
+__COMPUTE_TIMESTAMP = time.time()
+
+def track_compute_shader_changes():
+    from BlenderMalt import MaltPipeline
+    if MaltPipeline.is_malt_active() == False:
+        return 1
+
+    global __COMPUTE_TIMESTAMP
+    global _COMPUTE_MATERIALS
+    try:
+        start_time = time.time()
+
+        needs_update = []
+
+        for mesh in bpy.data.meshes:
+            tree_name = getattr(mesh, 'malt_compute_nodes', '')
+            if not tree_name:
+                continue
+            node_tree = bpy.data.node_groups.get(tree_name)
+            if node_tree is None:
+                continue
+            if not hasattr(node_tree, 'get_generated_source_path'):
+                continue
+            path = node_tree.get_generated_source_path()
+            if not path:
+                continue
+            if path not in needs_update:
+                if os.path.exists(path):
+                    stats = os.stat(path)
+                    if path not in _COMPUTE_MATERIALS or stats.st_mtime > __COMPUTE_TIMESTAMP:
+                        if path not in _COMPUTE_MATERIALS:
+                            _COMPUTE_MATERIALS[path] = None
+                        needs_update.append(path)
+
+        compiled = {}
+        from . import MaltPipeline
+        if len(needs_update) > 0:
+            compiled = MaltPipeline.get_bridge().compile_compute_materials(needs_update)
+
+        if len(compiled) > 0:
+            for key, value in compiled.items():
+                _COMPUTE_MATERIALS[key] = value
+            for screen in bpy.data.screens:
+                for area in screen.areas:
+                    area.tag_redraw()
+
+        __COMPUTE_TIMESTAMP = start_time
+    except:
+        import traceback
+        traceback.print_exc()
+    return 0.1
+
+
 def register():
     for _class in classes: bpy.utils.register_class(_class)
     bpy.types.Material.malt = bpy.props.PointerProperty(type=MaltMaterial,
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
-    
+
     bpy.app.timers.register(track_shader_changes, persistent=True)
+    bpy.app.timers.register(track_compute_shader_changes, persistent=True)
 
 def unregister():
     for _class in reversed(classes): bpy.utils.unregister_class(_class)
     del bpy.types.Material.malt
-    
+
     bpy.app.timers.unregister(track_shader_changes)
+    bpy.app.timers.unregister(track_compute_shader_changes)

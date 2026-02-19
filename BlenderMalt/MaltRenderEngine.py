@@ -127,6 +127,19 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                         meshes[name] = [Scene.Mesh(submesh, parameters) for submesh in malt_mesh]
                         for i, mesh in enumerate(meshes[name]):
                             scene.proxys[('mesh',name,i)] = mesh.mesh
+
+                        # Compute shader proxy: if the mesh data has a compute
+                        # node tree assigned, create a proxy so the server-side
+                        # mesh gets mesh.compute_shader set each frame.
+                        compute_tree_name = getattr(obj.original.data, 'malt_compute_nodes', '')
+                        compute_tree = bpy.data.node_groups.get(compute_tree_name) if compute_tree_name else None
+                        if compute_tree and hasattr(compute_tree, 'get_generated_source_path'):
+                            compute_path = compute_tree.get_generated_source_path()
+                            if compute_path:
+                                from Bridge.Proxys import ComputeShaderProxy
+                                for i in range(len(malt_mesh)):
+                                    proxy_key = ('compute', name, i)
+                                    scene.proxys[proxy_key] = ComputeShaderProxy(name, i, compute_path)
                     else:
                         meshes[name] = None
 

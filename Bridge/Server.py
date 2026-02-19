@@ -11,7 +11,7 @@ from Malt.GL.RenderTarget import RenderTarget
 from Malt.GL.Texture import Texture
 from Malt.PipelinePlugin import load_plugins_from_dir
 
-import Bridge.Mesh, Bridge.Material, Bridge.Texture
+import Bridge.Mesh, Bridge.Material, Bridge.ComputeMaterial, Bridge.Texture
 from . import ipc as ipc
 
 from Malt.Utils import LOG
@@ -435,7 +435,16 @@ def main(pipeline_path, viewport_bit_depth, connection_addresses,
                         'msg_type': 'MATERIAL',
                         'material' : material
                     })
-                
+
+                if msg['msg_type'] == 'COMPUTE_MATERIAL':
+                    LOG.debug('COMPILE COMPUTE MATERIAL : {}'.format(msg))
+                    path = msg['path']
+                    compute_material = Bridge.ComputeMaterial.ComputeMaterial(path, pipeline)
+                    connections['MAIN'].send({
+                        'msg_type': 'COMPUTE_MATERIAL',
+                        'compute_material': compute_material
+                    })
+
                 if msg['msg_type'] == 'MESH':
                     msg_log = copy.copy(msg)
                     msg_log['data'] = None
