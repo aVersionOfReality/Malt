@@ -4,7 +4,7 @@
 // Binding point reservations (must not be used by individual compute shaders):
 //   0–3  = SSBO_DATA_0–3        — loop-domain vec4[] (face corner color attributes)
 //   4–7  = SSBO_VTX_DATA_0–3   — vertex-domain vec4[] (vertex attributes, indexed via corner_vert)
-//   8    = rest_positions        — reserved for future GPU skinning (currently unused)
+//   8    = rest_positions        — loop-indexed vec3[], read-only undeformed positions
 //   9    = deformed_positions    — loop-indexed vec3[], read-write; current position in and out
 //   10   = corner_vert           — loop-indexed int[], maps each loop to its unique vertex index
 //   11   = normals               — loop-indexed vec3[], read-only current normals
@@ -33,6 +33,10 @@ layout(std430, binding = 6) buffer SSBO_VTX_DATA_2 { vec4 ssbo_vtx_data_2[]; };
 layout(std430, binding = 7) buffer SSBO_VTX_DATA_3 { vec4 ssbo_vtx_data_3[]; };
 
 // Compute-specific SSBOs (bindings 8–11)
+layout(std430, binding = 8) readonly buffer REST_POSITIONS {
+    vec3 rest_positions[];
+};
+
 layout(std430, binding = 9) buffer DEFORMED_POSITIONS {
     vec3 deformed_positions[];
 };
@@ -52,6 +56,7 @@ void COMPUTE_SHADER(uint loop_index);
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= LOOP_COUNT) return;
+    deformed_positions[idx] = rest_positions[idx];
     COMPUTE_SHADER(idx);
 }
 
