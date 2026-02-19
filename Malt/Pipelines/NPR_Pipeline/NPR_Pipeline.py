@@ -223,6 +223,11 @@ class NPR_Pipeline(Pipeline):
         # Malt/Shaders/) to compute.include_paths, so 'Compute/NPR_ComputeShader.glsl'
         # resolves without any extra path manipulation here.
         self.add_graph(compute)
+        # Register Malt/Shaders/Compute/ as a node library so that all .glsl files
+        # there (e.g. Displace.glsl) are discovered by reflection and appear as
+        # nodes in the Compute graph editor.
+        from Malt.Pipeline import SHADER_DIR
+        compute.add_library(os.path.join(SHADER_DIR, 'Compute'))
 
         render_layer = PythonPipelineGraph(
             name='Render Layer',
