@@ -16,6 +16,9 @@
 // Use corner_vert[loop_index] to get the unique vertex index.
 // Guard against out-of-range access using LOOP_COUNT.
 
+#ifndef NPR_COMPUTE_SHADER_GLSL
+#define NPR_COMPUTE_SHADER_GLSL
+
 #ifdef COMPUTE_SHADER
 
 layout(local_size_x = 64) in;
@@ -67,3 +70,5 @@ void main() {
 void COMPUTE_SHADER(uint loop_index);
 
 #endif // COMPUTE_SHADER
+
+#endif // NPR_COMPUTE_SHADER_GLSL

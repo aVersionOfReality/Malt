@@ -285,7 +285,7 @@ def track_compute_shader_changes():
         if len(needs_update) > 0:
             compiled = MaltPipeline.get_bridge().compile_compute_materials(needs_update)
 
-        if len(compiled) > 0:
+        if compiled:
             for key, value in compiled.items():
                 _COMPUTE_MATERIALS[key] = value
             for screen in bpy.data.screens:

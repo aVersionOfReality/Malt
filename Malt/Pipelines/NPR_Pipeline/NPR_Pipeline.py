@@ -215,7 +215,7 @@ class NPR_Pipeline(Pipeline):
                 GLSLGraphIO(
                     name='COMPUTE_SHADER',
                     define='CUSTOM_COMPUTE_SHADER',
-                    shader_type='PIXEL_SHADER',  # Used for reflection only; compilation uses COMPUTE_SHADER
+                    shader_type='COMPUTE_SHADER',
                 )
             ],
         )

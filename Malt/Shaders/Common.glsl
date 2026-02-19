@@ -15,7 +15,9 @@ vec2 UV[4];
 vec4 COLOR[4];
 uvec4 ID;
 
+#ifndef COMPUTE_SHADER
 vertex_out mat4 MODEL;
+#endif
 
 layout(std140) uniform COMMON_UNIFORMS
 {
@@ -49,22 +51,29 @@ layout(std140) uniform BATCH_IDS
 };
 #define BATCH_ID(index) BATCH_ID[(index)/4][(index)%4]
 
+#ifndef COMPUTE_SHADER
 flat vertex_out int IO_VERTEX_ID;
+#endif
 
 uniform bvec4 SSBO_ACTIVE = bvec4(false);
 
+#ifndef COMPUTE_SHADER
 layout(std430, binding = 0) buffer SSBO_DATA_0 { vec4 ssbo_data_0[]; };
 layout(std430, binding = 1) buffer SSBO_DATA_1 { vec4 ssbo_data_1[]; };
 layout(std430, binding = 2) buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
 layout(std430, binding = 3) buffer SSBO_DATA_3 { vec4 ssbo_data_3[]; };
+#endif
 
 uniform bvec4 SSBO_VTX_ACTIVE = bvec4(false);
 
+#ifndef COMPUTE_SHADER
 layout(std430, binding = 4) buffer SSBO_VTX_DATA_0 { vec4 ssbo_vtx_data_0[]; };
 layout(std430, binding = 5) buffer SSBO_VTX_DATA_1 { vec4 ssbo_vtx_data_1[]; };
 layout(std430, binding = 6) buffer SSBO_VTX_DATA_2 { vec4 ssbo_vtx_data_2[]; };
 layout(std430, binding = 7) buffer SSBO_VTX_DATA_3 { vec4 ssbo_vtx_data_3[]; };
+#endif
 
+#ifndef COMPUTE_SHADER
 vertex_out vec3 IO_POSITION;
 vertex_out vec3 IO_NORMAL;
 vertex_out vec3 IO_TANGENT;
@@ -72,6 +81,7 @@ vertex_out vec3 IO_BITANGENT;
 vertex_out vec2 IO_UV[4];
 vertex_out vec4 IO_COLOR[4];
 flat vertex_out uvec4 IO_ID;
+#endif
 
 #include "Common/Color.glsl"
 #include "Common/Hash.glsl"

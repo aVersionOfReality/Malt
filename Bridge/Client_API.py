@@ -103,6 +103,7 @@ class Bridge():
         self.graphs = params['graphs']
         self.render_outputs = params['outputs']
         self.lost_connection = False
+        self._pending_msgs = {}
 
     
     def __del__(self):
@@ -119,6 +120,17 @@ class Bridge():
             return self.shared_dict['STATS']
         else:
             return ''
+
+    def _recv_typed(self, msg_type):
+        """Receive a message of *msg_type*, buffering any other types for later."""
+        pending = self._pending_msgs.get(msg_type)
+        if pending:
+            return pending.pop(0)
+        while True:
+            msg = self.connections['MAIN'].recv()
+            if msg['msg_type'] == msg_type:
+                return msg
+            self._pending_msgs.setdefault(msg['msg_type'], []).append(msg)
 
     @bridge_method
     def compile_material(self, path, search_paths=[], custom_passes=[]):
@@ -150,8 +162,7 @@ class Bridge():
                         break
                 if completed:
                     break
-                msg = self.connections['MAIN'].recv()
-                assert(msg['msg_type'] == 'MATERIAL')
+                msg = self._recv_typed('MATERIAL')
                 material = msg['material']
                 results[material.path] = material
                 received.append(material.path)
@@ -185,8 +196,7 @@ class Bridge():
                         break
                 if completed:
                     break
-                msg = self.connections['MAIN'].recv()
-                assert(msg['msg_type'] == 'COMPUTE_MATERIAL')
+                msg = self._recv_typed('COMPUTE_MATERIAL')
                 cm = msg['compute_material']
                 results[cm.path] = cm
                 received.append(cm.path)
