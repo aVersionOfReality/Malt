@@ -83,7 +83,6 @@ class PrePass(PipelineNode):
         })
         self.fbo.clear([(0,0,0,1), (0,0,0,0)] + [(0,0,0,0)]*len(self.custom_targets), 1)
 
-        self.pipeline.run_compute_pass(scene.batches)
         self.pipeline.draw_scene_pass(self.fbo, scene.batches, 'PRE_PASS', self.pipeline.default_shader['PRE_PASS'], shader_resources)
 
         if is_opaque_pass:

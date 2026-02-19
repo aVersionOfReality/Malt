@@ -65,6 +65,19 @@ void MAIN_PASS_PIXEL_SHADER()
 
 DEFAULTS_PATH = os.path.join(os.path.dirname(__file__), 'Defaults', 'defaults')
 
+_COMPUTE_SHADER_HEADER = '#include "Compute/NPR_ComputeShader.glsl"\n'
+
+_DEFAULT_COMPUTE_SHADER_SRC = '''\
+// Default no-op compute shader: passes rest positions through to deformed positions.
+#ifndef COMPUTE_SHADER
+void COMPUTE_SHADER(uint loop_index) { }
+#else
+void COMPUTE_SHADER(uint loop_index) {
+    deformed_positions[loop_index] = rest_positions[loop_index];
+}
+#endif
+'''
+
 class NPR_Pipeline(Pipeline):
 
     def __init__(self, plugins=[]):
@@ -193,7 +206,24 @@ class NPR_Pipeline(Pipeline):
             ]
         )
         self.add_graph(light)
-        
+
+        compute = ComputePipelineGraph(
+            name='Compute',
+            default_global_scope=_COMPUTE_SHADER_HEADER,
+            default_shader_src=_DEFAULT_COMPUTE_SHADER_SRC,
+            graph_io=[
+                GLSLGraphIO(
+                    name='COMPUTE_SHADER',
+                    define='CUSTOM_COMPUTE_SHADER',
+                    shader_type='PIXEL_SHADER',  # Used for reflection only; compilation uses COMPUTE_SHADER
+                )
+            ],
+        )
+        # Pipeline.add_graph() will append SHADER_INCLUDE_PATHS (which includes
+        # Malt/Shaders/) to compute.include_paths, so 'Compute/NPR_ComputeShader.glsl'
+        # resolves without any extra path manipulation here.
+        self.add_graph(compute)
+
         render_layer = PythonPipelineGraph(
             name='Render Layer',
             default_graph_path=(DEFAULTS_PATH, 'Default Render Layer'),

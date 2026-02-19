@@ -238,6 +238,42 @@ class PythonPipelineGraph(PipelineGraph):
         except:
             raise MaltGraphExecutionException(source, PARAMETERS, IN, OUT)
 
+class ComputePipelineGraph(GLSLPipelineGraph):
+    """GLSLPipelineGraph variant that compiles a single COMPUTE_SHADER stage
+    instead of VERTEX_SHADER + PIXEL_SHADER pairs.
+
+    The file extension is '.compute.glsl'.  The compiled material is a dict
+    with a single key 'COMPUTE' whose value is a ComputeShader instance.
+    """
+
+    def __init__(self, name, default_global_scope, default_shader_src, graph_io=[],
+                 default_graph_path=None):
+        super().__init__(
+            name=name,
+            graph_type=GLSLPipelineGraph.SCENE_GRAPH,
+            default_global_scope=default_global_scope,
+            default_shader_src=default_shader_src,
+            shaders=['COMPUTE'],
+            graph_io=graph_io,
+            default_graph_path=default_graph_path,
+        )
+        # The parent sets file_extension to f'.{name.lower()}.glsl', so for
+        # name='Compute' the extension is '.compute.glsl' — exactly what we want.
+
+    # setup_reflection() is inherited from GLSLPipelineGraph unchanged.
+    # The NPR_ComputeShader.glsl header exposes the COMPUTE_SHADER function
+    # signature in its #else branch (non-COMPUTE_SHADER context), so the
+    # parent's reflection pass (VERTEX_SHADER + PIXEL_SHADER + REFLECTION)
+    # can discover the entry-point without any changes here.
+
+    def compile_material(self, source, include_paths=[]):
+        from Malt.GL.ComputeShader import ComputeShader
+        compute_src = self.preprocess_shader_from_source(
+            source, include_paths, ['COMPUTE_SHADER']
+        )
+        return {'COMPUTE': ComputeShader(compute_src)}
+
+
 class MaltGraphExecutionException(Exception):
     def __init__(self, source, parameters, inputs, outputs):
         import pprint

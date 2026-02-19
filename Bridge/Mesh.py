@@ -15,5 +15,6 @@ def load_mesh(pipeline, msg):
         ssbo_vtx_colors = data.get('ssbo_vtx_colors', [None]*4),
         vertex_count = data.get('vertex_count', 0),
         loop_count = data.get('loop_count', 0),
-        rest_positions = data.get('rest_positions', None)
+        rest_positions = data.get('rest_positions', None),
+        corner_vert = data.get('corner_vert', None)
     )

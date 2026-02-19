@@ -67,6 +67,12 @@ def load_mesh(object, name):
     rest_positions = get_load_buffer('rest_positions', ctypes.c_float, loop_count * 3)
     ctypes.memmove(rest_positions.buffer(), positions.buffer(), rest_positions.size_in_bytes())
 
+    # corner_vert: loop index → unique vertex index mapping (binding 10).
+    # Lets compute shaders work in vertex space and scatter results back to corners.
+    corner_vert = get_load_buffer('corner_vert', ctypes.c_int, loop_count)
+    corner_vert_src = attribute_ptr(".corner_vert", ctypes.c_int)
+    ctypes.memmove(corner_vert.buffer(), corner_vert_src, corner_vert.size_in_bytes())
+
     normals = get_load_buffer('normals', ctypes.c_float, (loop_count * 3))
     ctypes.memmove(normals.buffer(), m.corner_normals[0].as_pointer(), normals.size_in_bytes())
 
@@ -190,6 +196,7 @@ def load_mesh(object, name):
         'vertex_count': vertex_count,
         'loop_count': loop_count,
         'rest_positions': rest_positions,
+        'corner_vert': corner_vert,
     }
 
     from . import MaltPipeline
