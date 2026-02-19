@@ -65,8 +65,9 @@ void main() {
 
 #else // not COMPUTE_SHADER — reflection/vertex/pixel context
 
-// Forward declaration visible to the reflection tool so that the node editor
-// can discover the entry-point signature without requiring COMPUTE_SHADER.
+// Forward declaration for non-compute contexts (e.g. vertex/pixel shader includes).
+// The GLSLParser ignores bare forward declarations, so the stub body that makes
+// COMPUTE_SHADER discoverable lives in _DEFAULT_COMPUTE_SHADER_SRC instead.
 void COMPUTE_SHADER(uint loop_index);
 
 #endif // COMPUTE_SHADER

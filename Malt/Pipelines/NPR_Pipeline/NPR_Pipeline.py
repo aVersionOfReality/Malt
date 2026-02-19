@@ -68,11 +68,13 @@ DEFAULTS_PATH = os.path.join(os.path.dirname(__file__), 'Defaults', 'defaults')
 _COMPUTE_SHADER_HEADER = '#include "Compute/NPR_ComputeShader.glsl"\n'
 
 _DEFAULT_COMPUTE_SHADER_SRC = '''\
-// Default no-op compute shader: passes rest positions through to deformed positions.
-// Only active in compute context; reflection uses the forward declaration in
-// NPR_ComputeShader.glsl so there is never more than one COMPUTE_SHADER definition
-// visible to the reflection pass.
-#ifdef COMPUTE_SHADER
+// Default no-op compute shader.
+// The #ifndef branch provides a stub body so the reflection pass can discover
+// the COMPUTE_SHADER entry-point signature via the GLSLParser (which only reports
+// functions that have a body, not bare forward declarations).
+#ifndef COMPUTE_SHADER
+void COMPUTE_SHADER(uint loop_index) { }
+#else
 void COMPUTE_SHADER(uint loop_index) {
     deformed_positions[loop_index] = rest_positions[loop_index];
 }

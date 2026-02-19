@@ -9,8 +9,9 @@
 //   - Call Displace(loop_index, strength) from within COMPUTE_SHADER().
 
 #ifndef COMPUTE_SHADER
-// Forward declarations for node graph reflection (non-compute context).
-void Displace(uint loop_index, float strength);
+// Stub body for the reflection pass. GLSLParser only reports functions that have
+// a body, so a bare forward declaration would make Displace invisible as a node.
+void Displace(uint loop_index, float strength) { }
 #else
 
 void Displace(uint loop_index, float strength)
