@@ -10,7 +10,7 @@ class MaltFunctionSubCategoryNode(bpy.types.Node, MaltFunctionNodeBase):
     def get_function_enums(self, context=None):
         library = self.id_data.get_full_library()
         items = []
-        for key in library['subcategories'][self.subcategory]:
+        for key in library['subcategories'].get(self.subcategory, []):
             function = library['functions'].get(key)
             if function is None or function['meta'].get('internal'):
                 continue
@@ -36,7 +36,9 @@ class MaltFunctionSubCategoryNode(bpy.types.Node, MaltFunctionNodeBase):
                 try:
                     self.function_type = self.function_enum
                 except:
-                    self.function_type = self.get_function_enums()[0][0]
+                    enums = self.get_function_enums()
+                    if enums:
+                        self.function_type = enums[0][0]
         return super().malt_setup(copy=copy)
     
     def should_delete_outdated_links(self):
@@ -55,7 +57,7 @@ class MaltFunctionSubCategoryNode(bpy.types.Node, MaltFunctionNodeBase):
         blf.size(0, point_size)
         max_width = super().calc_node_width(point_size)
         layout_padding = 70 # account for the spaces on both sides of the enum dropdown
-        label = next(enum[1] for enum in self.get_function_enums() if enum[0]==self.function_enum)
+        label = next((enum[1] for enum in self.get_function_enums() if enum[0]==self.function_enum), self.subcategory)
         return max(max_width, blf.dimensions(0, label)[0] + layout_padding)
 
     def draw_label(self):

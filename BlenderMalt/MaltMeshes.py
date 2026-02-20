@@ -62,10 +62,20 @@ def load_mesh(object, name):
     for i in range(material_count):
         indices[i]._size = indices_lengths[i]
 
-    # Rest positions: a read-only copy of the loop-indexed positions uploaded
-    # as an SSBO so compute shaders can read the undeformed positions each frame.
-    rest_positions = get_load_buffer('rest_positions', ctypes.c_float, loop_count * 3)
-    ctypes.memmove(rest_positions.buffer(), positions.buffer(), rest_positions.size_in_bytes())
+    # Rest positions and normals are uploaded as vec4 (4 floats per element, w=0) rather than
+    # vec3 so the GPU buffer stride matches std430's vec4[] layout (16 bytes/element).
+    # vec3[] in std430 also has 16-byte stride per the GLSL spec, but the CPU data is tightly
+    # packed at 12 bytes/element, causing a read/write offset mismatch on the GPU.
+
+    # Rest positions: loop-indexed positions padded to vec4 for SSBO binding 8.
+    rest_positions = get_load_buffer('rest_positions', ctypes.c_float, loop_count * 4)
+    pos_src = ctypes.cast(positions.buffer(), ctypes.POINTER(ctypes.c_float))
+    pos_dst = ctypes.cast(rest_positions.buffer(), ctypes.POINTER(ctypes.c_float))
+    for j in range(loop_count):
+        pos_dst[j*4]   = pos_src[j*3]
+        pos_dst[j*4+1] = pos_src[j*3+1]
+        pos_dst[j*4+2] = pos_src[j*3+2]
+        pos_dst[j*4+3] = 0.0
 
     # corner_vert: loop index → unique vertex index mapping (binding 10).
     # Lets compute shaders work in vertex space and scatter results back to corners.
@@ -73,8 +83,26 @@ def load_mesh(object, name):
     corner_vert_src = attribute_ptr(".corner_vert", ctypes.c_int)
     ctypes.memmove(corner_vert.buffer(), corner_vert_src, corner_vert.size_in_bytes())
 
-    normals = get_load_buffer('normals', ctypes.c_float, (loop_count * 3))
-    ctypes.memmove(normals.buffer(), m.corner_normals[0].as_pointer(), normals.size_in_bytes())
+    # Normals: loop-indexed corner normals padded to vec4 (4 floats, w=0).
+    # This buffer serves as the Normal VBO (read by the vertex shader with stride=16 to
+    # skip the w padding) and as the writable Normal SSBO (binding 11).  The compute
+    # shader writes its output normal here each frame.
+    # Using GL_DYNAMIC_DRAW so the compute shader can write updated normals back.
+    normals = get_load_buffer('normals', ctypes.c_float, loop_count * 4)
+    norm_src = (ctypes.c_float * (loop_count * 3)).from_address(m.corner_normals[0].as_pointer())
+    norm_dst = ctypes.cast(normals.buffer(), ctypes.POINTER(ctypes.c_float))
+    for j in range(loop_count):
+        norm_dst[j*4]   = norm_src[j*3]
+        norm_dst[j*4+1] = norm_src[j*3+1]
+        norm_dst[j*4+2] = norm_src[j*3+2]
+        norm_dst[j*4+3] = 0.0
+
+    # Rest normals: read-only copy of the original Blender normals (binding 12).
+    # main() in NPR_ComputeShader.glsl initialises the 'normal' inout parameter from
+    # this buffer, so the Compute Input node always delivers the original mesh normal
+    # regardless of what the compute shader wrote to normals[] on the previous frame.
+    rest_normals = get_load_buffer('rest_normals', ctypes.c_float, loop_count * 4)
+    ctypes.memmove(rest_normals.buffer(), normals.buffer(), normals.size_in_bytes())
 
     uvs_list = []
     tangents_buffer = None
@@ -114,9 +142,11 @@ def load_mesh(object, name):
                 ctypes.memmove(color_buffer.buffer(), color, color_buffer.size_in_bytes())
                 colors_list[i] = color_buffer
 
-    ssbo_colors_list = [None]*4
+    vertex_count = len(m.vertices)
+
+    ssbo_colors_list = [None]*8
     if object.type == 'MESH':
-        for i in range(4):
+        for i in range(8):
             attr_name = f'malt_ssbo_{i}'
             attribute = m.attributes.get(attr_name)
             if attribute and attribute.domain == 'FACE':
@@ -162,27 +192,34 @@ def load_mesh(object, name):
                     for j in range(loop_count * 4):
                         buf_ptr[j] = corner_data[j] / 255.0
                     ssbo_colors_list[i] = buf
-
-    vertex_count = len(m.vertices)
-
-    ssbo_vtx_colors_list = [None]*4
-    if object.type == 'MESH':
-        for i in range(4):
-            attr_name = f'malt_ssbo_vtx_{i}'
-            attribute = m.attributes.get(attr_name)
-            if attribute and attribute.domain == 'POINT':
+            elif attribute and attribute.domain == 'POINT':
+                # Expand vertex-domain data to face-corner domain using corner_vert mapping.
+                cv_ptr = m.attributes[".corner_vert"].data[0].as_pointer() if ".corner_vert" in m.attributes else 0
+                if not cv_ptr:
+                    continue
+                cv_src = (ctypes.c_int * loop_count).from_address(cv_ptr)
                 if attribute.data_type == 'FLOAT_COLOR':
                     vtx_data = (ctypes.c_float * (vertex_count * 4)).from_address(attribute.data[0].as_pointer())
-                    buf = get_load_buffer('ssbo_vtx_color'+str(i), ctypes.c_float, vertex_count * 4)
-                    ctypes.memmove(buf.buffer(), vtx_data, buf.size_in_bytes())
-                    ssbo_vtx_colors_list[i] = buf
+                    expanded = get_load_buffer('ssbo_color'+str(i), ctypes.c_float, loop_count * 4)
+                    expanded_ptr = ctypes.cast(expanded.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for j in range(loop_count):
+                        v = cv_src[j]
+                        expanded_ptr[j*4]   = vtx_data[v*4]
+                        expanded_ptr[j*4+1] = vtx_data[v*4+1]
+                        expanded_ptr[j*4+2] = vtx_data[v*4+2]
+                        expanded_ptr[j*4+3] = vtx_data[v*4+3]
+                    ssbo_colors_list[i] = expanded
                 elif attribute.data_type == 'BYTE_COLOR':
                     vtx_data = (ctypes.c_uint8 * (vertex_count * 4)).from_address(attribute.data[0].as_pointer())
-                    buf = get_load_buffer('ssbo_vtx_color'+str(i), ctypes.c_float, vertex_count * 4)
-                    buf_ptr = ctypes.cast(buf.buffer(), ctypes.POINTER(ctypes.c_float))
-                    for j in range(vertex_count * 4):
-                        buf_ptr[j] = vtx_data[j] / 255.0
-                    ssbo_vtx_colors_list[i] = buf
+                    expanded = get_load_buffer('ssbo_color'+str(i), ctypes.c_float, loop_count * 4)
+                    expanded_ptr = ctypes.cast(expanded.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for j in range(loop_count):
+                        v = cv_src[j]
+                        expanded_ptr[j*4]   = vtx_data[v*4]   / 255.0
+                        expanded_ptr[j*4+1] = vtx_data[v*4+1] / 255.0
+                        expanded_ptr[j*4+2] = vtx_data[v*4+2] / 255.0
+                        expanded_ptr[j*4+3] = vtx_data[v*4+3] / 255.0
+                    ssbo_colors_list[i] = expanded
 
     mesh_data = {
         'positions': positions,
@@ -192,12 +229,12 @@ def load_mesh(object, name):
         'tangents': tangents_buffer,
         'colors': colors_list,
         'ssbo_colors': ssbo_colors_list,
-        'ssbo_vtx_colors': ssbo_vtx_colors_list,
         'vertex_count': vertex_count,
         'loop_count': loop_count,
         'rest_positions': rest_positions,
+        'rest_normals': rest_normals,
         'corner_vert': corner_vert,
-        'normals_ssbo': normals,  # same buffer reused as SSBO (binding 11)
+        'normals_ssbo': None,
     }
 
     from . import MaltPipeline

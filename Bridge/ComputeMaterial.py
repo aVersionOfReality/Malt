@@ -34,6 +34,7 @@ class ComputeMaterial():
             COMPUTE_SHADERS[self.path] = compiled['COMPUTE']
         else:
             COMPUTE_SHADERS[self.path] = None
+            print('COMPUTE SHADER ERROR : {}\n{}'.format(path, self.compiler_error))
 
 
 def get_compute_shader(path):

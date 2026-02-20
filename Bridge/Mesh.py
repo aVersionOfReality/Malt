@@ -11,11 +11,11 @@ def load_mesh(pipeline, msg):
         tangent = data['tangents'],
         uvs = data['uvs'],
         colors = data['colors'],
-        ssbo_colors = data.get('ssbo_colors', [None]*4),
-        ssbo_vtx_colors = data.get('ssbo_vtx_colors', [None]*4),
+        ssbo_colors = data.get('ssbo_colors', [None]*8),
         vertex_count = data.get('vertex_count', 0),
         loop_count = data.get('loop_count', 0),
         rest_positions = data.get('rest_positions', None),
+        rest_normals = data.get('rest_normals', None),
         corner_vert = data.get('corner_vert', None),
         normals_ssbo = data.get('normals_ssbo', None),
     )

@@ -183,6 +183,9 @@ class MaltFunctionNodeBase(MaltNode):
 
     def get_source_code(self, transpiler):
         function = self.get_function()
+        if function is None:
+            print(f'WARNING: Node "{self.name}" function type "{self.function_type}" not found in library — skipping source generation.')
+            return ''
         source_name = self.get_source_name()
 
         parameters = []

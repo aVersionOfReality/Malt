@@ -163,7 +163,7 @@ void Vertex_Color(
 
 /*  META
     @meta: subcategory=SSBO;
-    @Index: min=0; max=3;
+    @Index: min=0; max=7;
 */
 void SSBO_Color(
     int Index,
@@ -171,10 +171,14 @@ void SSBO_Color(
 )
 {
     Color = vec4(0);
-    if(Index == 0 && SSBO_ACTIVE[0]) Color = ssbo_data_0[IO_VERTEX_ID];
-    else if(Index == 1 && SSBO_ACTIVE[1]) Color = ssbo_data_1[IO_VERTEX_ID];
-    else if(Index == 2 && SSBO_ACTIVE[2]) Color = ssbo_data_2[IO_VERTEX_ID];
-    else if(Index == 3 && SSBO_ACTIVE[3]) Color = ssbo_data_3[IO_VERTEX_ID];
+    if      (Index == 0 && SSBO_ACTIVE[0])      Color = ssbo_data_0[IO_VERTEX_ID];
+    else if (Index == 1 && SSBO_ACTIVE[1])      Color = ssbo_data_1[IO_VERTEX_ID];
+    else if (Index == 2 && SSBO_ACTIVE[2])      Color = ssbo_data_2[IO_VERTEX_ID];
+    else if (Index == 3 && SSBO_ACTIVE[3])      Color = ssbo_data_3[IO_VERTEX_ID];
+    else if (Index == 4 && SSBO_ACTIVE_HIGH[0]) Color = ssbo_data_4[IO_VERTEX_ID];
+    else if (Index == 5 && SSBO_ACTIVE_HIGH[1]) Color = ssbo_data_5[IO_VERTEX_ID];
+    else if (Index == 6 && SSBO_ACTIVE_HIGH[2]) Color = ssbo_data_6[IO_VERTEX_ID];
+    else if (Index == 7 && SSBO_ACTIVE_HIGH[3]) Color = ssbo_data_7[IO_VERTEX_ID];
 }
 
 #endif //NO_SSBO_COLOR_INPUT

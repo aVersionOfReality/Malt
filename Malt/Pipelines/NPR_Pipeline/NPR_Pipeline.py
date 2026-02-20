@@ -72,14 +72,12 @@ _DEFAULT_COMPUTE_SHADER_SRC = '''\
 // The #ifndef branch provides a stub body so the reflection pass can discover
 // the COMPUTE_SHADER entry-point signature via the GLSLParser (which only reports
 // functions that have a body, not bare forward declarations).
-// loop_index is inout so the Output node gets an input socket, which lets the
-// source generator trace backwards through any connected compute nodes.
+// position and normal are inout: the Output node exposes them as input sockets.
+// Unconnected sockets pass through the original rest-position / rest-normal values.
 #ifndef COMPUTE_STAGE
-void COMPUTE_SHADER(inout uint loop_index) { }
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal) { }
 #else
-void COMPUTE_SHADER(inout uint loop_index) {
-    deformed_positions[loop_index] = rest_positions[loop_index];
-}
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal) { }
 #endif
 '''
 

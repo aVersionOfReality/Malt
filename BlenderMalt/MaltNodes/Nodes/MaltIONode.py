@@ -116,6 +116,12 @@ class MaltIONode(bpy.types.Node, MaltNode):
         if self.is_output:
             function = self.get_function()
             custom_outputs = ''
+            # Two-phase assignment for non-result output sockets:
+            # Phase 1 — evaluate every initialisation expression into a temp variable.
+            # Phase 2 — write the temps to the actual inout/out parameter references.
+            # This prevents ordering bugs when crossed connections create read-after-write
+            # hazards (e.g. swapping Position ↔ Normal reads stale values without temps).
+            deferred = []
             for socket in self.inputs:
                 if socket.active == False:
                     continue
@@ -124,9 +130,18 @@ class MaltIONode(bpy.types.Node, MaltNode):
                 else:
                     if socket.name == 'result':
                         code += transpiler.declaration(socket.data_type, socket.array_size, socket.name)
-                    initialization = socket.get_source_initialization()
-                    if initialization:
-                        code += transpiler.asignment(socket.get_source_reference(), initialization)
+                        initialization = socket.get_source_initialization()
+                        if initialization:
+                            code += transpiler.asignment(socket.get_source_reference(), initialization)
+                    else:
+                        initialization = socket.get_source_initialization()
+                        if initialization:
+                            ref = socket.get_source_reference()
+                            temp = f'_out_{socket.name}'
+                            code += transpiler.declaration(socket.data_type, socket.array_size, temp, initialization)
+                            deferred.append((ref, temp))
+            for ref, temp in deferred:
+                code += transpiler.asignment(ref, temp)
             if custom_outputs != '':
                 graph_io = self.id_data.get_pipeline_graph().graph_io[self.io_type]
                 try: io_wrap = graph_io.io_wrap

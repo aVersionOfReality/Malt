@@ -284,11 +284,15 @@ def track_compute_shader_changes():
         compiled = {}
         from . import MaltPipeline
         if len(needs_update) > 0:
+            for _p in needs_update:
+                print(f'COMPUTE SHADER RECOMPILING: {os.path.basename(_p)}')
             compiled = MaltPipeline.get_bridge().compile_compute_materials(needs_update)
 
         if compiled:
             for key, value in compiled.items():
                 _COMPUTE_MATERIALS[key] = value
+            from BlenderMalt import MaltRenderEngine as _MRE
+            _MRE.NEEDS_RERENDER = True
             for screen in bpy.data.screens:
                 for area in screen.areas:
                     area.tag_redraw()

@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*4, ssbo_vtx_colors=[None]*4, vertex_count=0, loop_count=0, rest_positions=None, corner_vert=None, normals_ssbo=None):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, normals_ssbo=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -178,47 +178,52 @@ class Pipeline():
 
         position_vbo = load_VBO(position)
 
-        # Deformed position buffer: same size as position_vbo, GPU-writable.
-        # Compute shaders write here each frame; the VAO reads from it via in_position.
+        # Deformed position buffer: vec4 per loop (16 bytes), GPU-writable.
+        # Uses vec4 instead of vec3 so the buffer stride (16 bytes) matches std430 vec4[]
+        # layout in the compute shader SSBO. The VBO reads only xyz (element_size=3) with
+        # an explicit stride of 16 to skip the w padding float.
         deformed_position_buffer = gl_buffer(GL_INT, 1)
         glGenBuffers(1, deformed_position_buffer)
         glBindBuffer(GL_ARRAY_BUFFER, deformed_position_buffer[0])
-        glBufferData(GL_ARRAY_BUFFER, position.size_in_bytes(), position.buffer(), GL_DYNAMIC_DRAW)
+        if rest_positions is not None:
+            glBufferData(GL_ARRAY_BUFFER, rest_positions.size_in_bytes(), rest_positions.buffer(), GL_DYNAMIC_DRAW)
+        else:
+            glBufferData(GL_ARRAY_BUFFER, loop_count * 16, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
-        normal_vbo = load_VBO(normal)
+        # Normal VBO: GL_DYNAMIC_DRAW so the compute shader can write updated normals back.
+        # Expected to be 4-float per loop element (vec4, w=0) when coming from MaltMeshes.py.
+        normal_vbo = gl_buffer(GL_INT, 1)
+        glGenBuffers(1, normal_vbo)
+        glBindBuffer(GL_ARRAY_BUFFER, normal_vbo[0])
+        glBufferData(GL_ARRAY_BUFFER, normal.size_in_bytes(), normal.buffer(), GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
         tangent_vbo = load_VBO(tangent) if tangent else None
         uv_vbos = [load_VBO(e) for e in uvs]
         color_vbos = [load_VBO(e) if e else None for e in colors]
 
-        ssbo_objects = [None]*4
+        ssbo_objects = [None]*8
         for i, ssbo_data in enumerate(ssbo_colors):
-            if ssbo_data is not None and i < 4:
+            if ssbo_data is not None and i < 8:
                 ssbo = SSBO()
                 ssbo.load_raw(ssbo_data.buffer(), ssbo_data.size_in_bytes())
                 ssbo_objects[i] = ssbo
-
-        ssbo_vtx_objects = [None]*4
-        for i, ssbo_data in enumerate(ssbo_vtx_colors):
-            if ssbo_data is not None and i < 4:
-                ssbo = SSBO()
-                ssbo.load_raw(ssbo_data.buffer(), ssbo_data.size_in_bytes())
-                ssbo_vtx_objects[i] = ssbo
 
         rest_position_ssbo = None
         if rest_positions is not None:
             rest_position_ssbo = SSBO()
             rest_position_ssbo.load_raw(rest_positions.buffer(), rest_positions.size_in_bytes())
 
+        rest_normals_ssbo = None
+        if rest_normals is not None:
+            rest_normals_ssbo = SSBO()
+            rest_normals_ssbo.load_raw(rest_normals.buffer(), rest_normals.size_in_bytes())
+
         corner_vert_ssbo = None
         if corner_vert is not None:
             corner_vert_ssbo = SSBO()
             corner_vert_ssbo.load_raw(corner_vert.buffer(), corner_vert.size_in_bytes())
-
-        normals_ssbo_obj = None
-        if normals_ssbo is not None:
-            normals_ssbo_obj = SSBO()
-            normals_ssbo_obj.load_raw(normals_ssbo.buffer(), normals_ssbo.size_in_bytes())
 
         results = []
 
@@ -242,23 +247,28 @@ class Pipeline():
             result.uvs = uv_vbos
             result.colors = color_vbos
             result.ssbo_list = ssbo_objects
-            result.ssbo_vertex_list = ssbo_vtx_objects
             result.vertex_count = vertex_count
             result.loop_count = loop_count
             result.rest_position_ssbo = rest_position_ssbo
+            result.rest_normals_ssbo = rest_normals_ssbo
             result.deformed_position_buffer = deformed_position_buffer
             result.corner_vert_ssbo = corner_vert_ssbo
-            result.normals_ssbo = normals_ssbo_obj
 
-            def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE):
+            def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE, stride=0):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
                 glEnableVertexAttribArray(index)
-                glVertexAttribPointer(index, element_size, gl_type, gl_normalize, 0, None)
+                glVertexAttribPointer(index, element_size, gl_type, gl_normalize, stride, None)
             
-            bind_VBO(result.deformed_position_buffer, 0, 3)
-            if position.size_in_bytes() == normal.size_in_bytes():
+            # stride=16: read 3 floats (xyz) with 16-byte spacing to skip the vec4 w padding
+            bind_VBO(result.deformed_position_buffer, 0, 3, stride=16)
+            if loop_count > 0 and normal.size_in_bytes() == loop_count * 16:
+                # 4-float vec4 normals (writable, stride=16 to skip w padding)
+                bind_VBO(result.normal, 1, 3, stride=16)
+            elif position.size_in_bytes() == normal.size_in_bytes():
+                # 3-float float normals (legacy tightly-packed)
                 bind_VBO(result.normal, 1, 3)
             else:
+                # Compressed short normals
                 bind_VBO(result.normal, 1, 3, GL_SHORT, GL_TRUE)
             
             if tangent:
@@ -398,10 +408,11 @@ class Pipeline():
                     continue
 
                 if compute_shader.error:
+                    print(f'COMPUTE SHADER SKIPPED (error): {getattr(m, "name", "?")}  —  {compute_shader.error[:120]}')
                     continue
 
-                compute_shader.bind()
-
+                # Cache all uniform values BEFORE bind() so that bind()'s bulk upload
+                # sends the current frame's values rather than last frame's.
                 if 'LOOP_COUNT' in compute_shader.uniforms:
                     compute_shader.uniforms['LOOP_COUNT'].set_value(m.loop_count)
                 if 'TIME' in compute_shader.uniforms:
@@ -415,22 +426,27 @@ class Pipeline():
                         compute_shader.uniforms[name].set_value(value)
 
                 # Bind mesh attribute SSBOs at standard binding points.
-                # Bindings 0–7 mirror the render pass (loop-domain and vertex-domain vec4 attributes).
-                # Bindings 8–11 are compute-specific:
-                #   8  = rest_positions  (reserved for future GPU skinning, currently unused)
-                #   9  = deformed_positions (loop-indexed vec3[], read-write — current pos in/out)
+                # Bindings 0–7 mirror the render pass (loop-domain vec4 face-corner attributes).
+                # Bindings 8–12 are compute-specific:
+                #   8  = rest_positions  (loop-indexed vec4[], read-only original positions)
+                #   9  = deformed_positions (loop-indexed vec4[], read-write compute output)
                 #   10 = corner_vert     (loop-indexed int[], loop→vertex mapping)
-                #   11 = normals         (loop-indexed vec3[], read-only current normals)
+                #   11 = normals         (loop-indexed vec4[], read-write compute output)
+                #   12 = rest_normals    (loop-indexed vec4[], read-only original normals)
 
-                # Loop-domain color SSBOs (bindings 0–3)
+                # Face-corner attribute SSBOs (bindings 0–7)
+                ssbo_active = tuple(s is not None for s in m.ssbo_list[:4])
+                ssbo_active_high = tuple(s is not None for s in m.ssbo_list[4:8])
+                if 'SSBO_ACTIVE' in compute_shader.uniforms:
+                    compute_shader.uniforms['SSBO_ACTIVE'].set_value(ssbo_active)
+                if 'SSBO_ACTIVE_HIGH' in compute_shader.uniforms:
+                    compute_shader.uniforms['SSBO_ACTIVE_HIGH'].set_value(ssbo_active_high)
+
+                compute_shader.bind()
+
                 for i, ssbo in enumerate(m.ssbo_list):
                     if ssbo is not None:
                         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
-
-                # Vertex-domain SSBOs (bindings 4–7)
-                for i, ssbo in enumerate(m.ssbo_vertex_list):
-                    if ssbo is not None:
-                        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4 + i, ssbo.buffer[0])
 
                 # Compute-specific SSBOs
                 if hasattr(m, 'rest_position_ssbo') and m.rest_position_ssbo is not None:
@@ -438,8 +454,10 @@ class Pipeline():
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
                 if m.corner_vert_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m.corner_vert_ssbo.buffer[0])
-                if hasattr(m, 'normals_ssbo') and m.normals_ssbo is not None:
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m.normals_ssbo.buffer[0])
+                if m.normal is not None:
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m.normal[0])
+                if hasattr(m, 'rest_normals_ssbo') and m.rest_normals_ssbo is not None:
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
 
                 workgroup_size = 64
                 workgroups = math.ceil(m.loop_count / workgroup_size)
@@ -475,7 +493,7 @@ class Pipeline():
             _scale_group = None
             _color_is_srgb = None
             _ssbo_active = None
-            _ssbo_vtx_active = None
+            _ssbo_active_high = None
             
             meshes = scene_batches[material]
             for mesh in meshes.keys():
@@ -503,24 +521,18 @@ class Pipeline():
                         precomputed_tangents_uniform.bind(precomputed_tangents)
 
                 if hasattr(mesh.mesh, 'ssbo_list'):
-                    ssbo_active = tuple(s is not None for s in mesh.mesh.ssbo_list)
+                    ssbo_active = tuple(s is not None for s in mesh.mesh.ssbo_list[:4])
+                    ssbo_active_high = tuple(s is not None for s in mesh.mesh.ssbo_list[4:8])
                     if ssbo_active != _ssbo_active:
                         if 'SSBO_ACTIVE' in shader.uniforms:
                             shader.uniforms['SSBO_ACTIVE'].bind(ssbo_active)
                         _ssbo_active = ssbo_active
+                    if ssbo_active_high != _ssbo_active_high:
+                        if 'SSBO_ACTIVE_HIGH' in shader.uniforms:
+                            shader.uniforms['SSBO_ACTIVE_HIGH'].bind(ssbo_active_high)
+                        _ssbo_active_high = ssbo_active_high
                     for i, ssbo in enumerate(mesh.mesh.ssbo_list):
                         block_name = f'SSBO_DATA_{i}'
-                        if ssbo is not None and block_name in shader.storage_blocks:
-                            ssbo.bind(shader.storage_blocks[block_name])
-
-                if hasattr(mesh.mesh, 'ssbo_vertex_list'):
-                    ssbo_vtx_active = tuple(s is not None for s in mesh.mesh.ssbo_vertex_list)
-                    if ssbo_vtx_active != _ssbo_vtx_active:
-                        if 'SSBO_VTX_ACTIVE' in shader.uniforms:
-                            shader.uniforms['SSBO_VTX_ACTIVE'].bind(ssbo_vtx_active)
-                        _ssbo_vtx_active = ssbo_vtx_active
-                    for i, ssbo in enumerate(mesh.mesh.ssbo_vertex_list):
-                        block_name = f'SSBO_VTX_DATA_{i}'
                         if ssbo is not None and block_name in shader.storage_blocks:
                             ssbo.bind(shader.storage_blocks[block_name])
 

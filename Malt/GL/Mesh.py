@@ -118,14 +118,12 @@ class MeshCustomLoad(Mesh):
         self.uvs = []
         self.colors = []
         self.color_is_srgb = [False]*4
-        self.ssbo_list = [None]*4
-        self.ssbo_vertex_list = [None]*4
+        self.ssbo_list = [None]*8
         self.vertex_count = 0
         self.loop_count = 0
         self.rest_position_ssbo = None
         self.deformed_position_buffer = None
         self.corner_vert_ssbo = None
-        self.normals_ssbo = None
 
         self.index_count = 0
 

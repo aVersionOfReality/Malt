@@ -56,21 +56,17 @@ flat vertex_out int IO_VERTEX_ID;
 #endif
 
 uniform bvec4 SSBO_ACTIVE = bvec4(false);
+uniform bvec4 SSBO_ACTIVE_HIGH = bvec4(false);
 
 #ifndef COMPUTE_STAGE
 layout(std430, binding = 0) buffer SSBO_DATA_0 { vec4 ssbo_data_0[]; };
 layout(std430, binding = 1) buffer SSBO_DATA_1 { vec4 ssbo_data_1[]; };
 layout(std430, binding = 2) buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
 layout(std430, binding = 3) buffer SSBO_DATA_3 { vec4 ssbo_data_3[]; };
-#endif
-
-uniform bvec4 SSBO_VTX_ACTIVE = bvec4(false);
-
-#ifndef COMPUTE_STAGE
-layout(std430, binding = 4) buffer SSBO_VTX_DATA_0 { vec4 ssbo_vtx_data_0[]; };
-layout(std430, binding = 5) buffer SSBO_VTX_DATA_1 { vec4 ssbo_vtx_data_1[]; };
-layout(std430, binding = 6) buffer SSBO_VTX_DATA_2 { vec4 ssbo_vtx_data_2[]; };
-layout(std430, binding = 7) buffer SSBO_VTX_DATA_3 { vec4 ssbo_vtx_data_3[]; };
+layout(std430, binding = 4) buffer SSBO_DATA_4 { vec4 ssbo_data_4[]; };
+layout(std430, binding = 5) buffer SSBO_DATA_5 { vec4 ssbo_data_5[]; };
+layout(std430, binding = 6) buffer SSBO_DATA_6 { vec4 ssbo_data_6[]; };
+layout(std430, binding = 7) buffer SSBO_DATA_7 { vec4 ssbo_data_7[]; };
 #endif
 
 #ifndef COMPUTE_STAGE

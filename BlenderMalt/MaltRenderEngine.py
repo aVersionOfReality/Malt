@@ -13,6 +13,11 @@ from . import MaltPipeline, MaltMeshes, MaltMaterial, CBlenderMalt
 
 CAPTURE = False
 
+# Set to True by track_compute_shader_changes() after a successful recompile so that
+# view_draw() knows it must submit a new render frame (request_new_frame was already
+# consumed before the recompile finished, so tag_redraw alone is not enough).
+NEEDS_RERENDER = False
+
 WINM = None
 if platform.system() == 'Windows':
     WINM = ctypes.WinDLL('winmm')
@@ -330,6 +335,12 @@ class MaltRenderEngine(bpy.types.RenderEngine):
         global CAPTURE
         if CAPTURE:
             self.request_new_frame = True
+
+        global NEEDS_RERENDER
+        if NEEDS_RERENDER:
+            self.request_new_frame = True
+            self.request_scene_update = True
+            NEEDS_RERENDER = False
         
         overrides = []
         if context.space_data.shading.type == 'MATERIAL':
