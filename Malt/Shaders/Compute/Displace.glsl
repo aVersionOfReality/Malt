@@ -6,15 +6,21 @@
 // Usage:
 //   - Create a FLOAT_COLOR attribute named "malt_ssbo_vtx_0" on the mesh (e.g. via
 //     Geometry Nodes). Set the R channel to the desired per-vertex weight (0.0–1.0).
-//   - Call Displace(loop_index, strength) from within COMPUTE_SHADER().
+//   - Connect: COMPUTE SHADER Input.Loop Index → Displace.Loop Index → COMPUTE SHADER Output.Loop Index
 
-#ifndef COMPUTE_SHADER
+/* META GLOBAL
+    @meta: category=Compute;
+*/
+
+#ifndef COMPUTE_STAGE
 // Stub body for the reflection pass. GLSLParser only reports functions that have
 // a body, so a bare forward declaration would make Displace invisible as a node.
-void Displace(uint loop_index, float strength) { }
+// loop_index is inout so it appears as both an input and output socket on the node,
+// enabling execution flow wiring to the COMPUTE SHADER Output node.
+void Displace(inout uint loop_index, float strength) { }
 #else
 
-void Displace(uint loop_index, float strength)
+void Displace(inout uint loop_index, float strength)
 {
     int vert = corner_vert[loop_index];
     float weight = ssbo_vtx_data_0[vert].r;
@@ -22,4 +28,4 @@ void Displace(uint loop_index, float strength)
     deformed_positions[loop_index] += n * weight * strength;
 }
 
-#endif // COMPUTE_SHADER
+#endif // COMPUTE_STAGE

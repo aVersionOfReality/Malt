@@ -10,8 +10,16 @@
 //   11   = normals               — loop-indexed vec3[], read-only current normals
 //
 // Every .compute.glsl node tree must implement:
-//   void COMPUTE_SHADER(uint loop_index)
+//   void COMPUTE_SHADER(inout uint loop_index)
 //
+// loop_index is inout so the Blender node graph Output node has an input socket,
+// allowing compute nodes to be chained from Input through to Output.
+// The value is not modified; the inout qualifier is used only for execution-order wiring.
+//
+// NOTE: The conditional compilation guard is COMPUTE_STAGE (not COMPUTE_SHADER), because
+// COMPUTE_SHADER is also the GLSL function name. Defining a macro with the same name as a
+// function causes the C preprocessor to erase the function name before the GLSL compiler
+// sees it. COMPUTE_STAGE avoids this conflict.
 // The loop_index argument is the current invocation's loop/corner index.
 // Use corner_vert[loop_index] to get the unique vertex index.
 // Guard against out-of-range access using LOOP_COUNT.
@@ -19,7 +27,7 @@
 #ifndef NPR_COMPUTE_SHADER_GLSL
 #define NPR_COMPUTE_SHADER_GLSL
 
-#ifdef COMPUTE_SHADER
+#ifdef COMPUTE_STAGE
 
 layout(local_size_x = 64) in;
 
@@ -54,7 +62,7 @@ layout(std430, binding = 11) readonly buffer NORMALS {
 
 uniform uint LOOP_COUNT = 0u;
 
-void COMPUTE_SHADER(uint loop_index);
+void COMPUTE_SHADER(inout uint loop_index);
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -63,13 +71,13 @@ void main() {
     COMPUTE_SHADER(idx);
 }
 
-#else // not COMPUTE_SHADER — reflection/vertex/pixel context
+#else // not COMPUTE_STAGE — reflection/vertex/pixel context
 
 // Forward declaration for non-compute contexts (e.g. vertex/pixel shader includes).
 // The GLSLParser ignores bare forward declarations, so the stub body that makes
 // COMPUTE_SHADER discoverable lives in _DEFAULT_COMPUTE_SHADER_SRC instead.
-void COMPUTE_SHADER(uint loop_index);
+void COMPUTE_SHADER(inout uint loop_index);
 
-#endif // COMPUTE_SHADER
+#endif // COMPUTE_STAGE
 
 #endif // NPR_COMPUTE_SHADER_GLSL

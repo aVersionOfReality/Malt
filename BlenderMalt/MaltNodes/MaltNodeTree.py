@@ -247,16 +247,20 @@ class MaltTree(bpy.types.NodeTree):
     
     def reload_nodes(self):
         self.disable_updates = True
-        try:
-            for node in self.nodes:
+        for node in self.nodes:
+            try:
                 if hasattr(node, 'setup'):
                     node.setup()
-            for node in self.nodes:
+            except:
+                import traceback
+                traceback.print_exc()
+        for node in self.nodes:
+            try:
                 if hasattr(node, 'update'):
                     node.update()
-        except:
-            import traceback
-            traceback.print_exc()
+            except:
+                import traceback
+                traceback.print_exc()
         self.disable_updates = False
 
     def update(self):

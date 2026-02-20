@@ -72,10 +72,12 @@ _DEFAULT_COMPUTE_SHADER_SRC = '''\
 // The #ifndef branch provides a stub body so the reflection pass can discover
 // the COMPUTE_SHADER entry-point signature via the GLSLParser (which only reports
 // functions that have a body, not bare forward declarations).
-#ifndef COMPUTE_SHADER
-void COMPUTE_SHADER(uint loop_index) { }
+// loop_index is inout so the Output node gets an input socket, which lets the
+// source generator trace backwards through any connected compute nodes.
+#ifndef COMPUTE_STAGE
+void COMPUTE_SHADER(inout uint loop_index) { }
 #else
-void COMPUTE_SHADER(uint loop_index) {
+void COMPUTE_SHADER(inout uint loop_index) {
     deformed_positions[loop_index] = rest_positions[loop_index];
 }
 #endif
@@ -218,7 +220,7 @@ class NPR_Pipeline(Pipeline):
                 GLSLGraphIO(
                     name='COMPUTE_SHADER',
                     define='CUSTOM_COMPUTE_SHADER',
-                    shader_type='COMPUTE_SHADER',
+                    shader_type='COMPUTE_STAGE',
                 )
             ],
         )
@@ -226,9 +228,6 @@ class NPR_Pipeline(Pipeline):
         # Malt/Shaders/) to compute.include_paths, so 'Compute/NPR_ComputeShader.glsl'
         # resolves without any extra path manipulation here.
         self.add_graph(compute)
-        # Register Malt/Shaders/Compute/ as a node library so that all .glsl files
-        # there (e.g. Displace.glsl) are discovered by reflection and appear as
-        # nodes in the Compute graph editor.
         from Malt.Pipeline import SHADER_DIR
         compute.add_library(os.path.join(SHADER_DIR, 'Compute'))
 

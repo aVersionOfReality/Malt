@@ -137,9 +137,10 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                             compute_path = compute_tree.get_generated_source_path()
                             if compute_path:
                                 from Bridge.Proxys import ComputeShaderProxy
+                                compute_params = compute_tree.malt_parameters.get_parameters(overrides, scene.proxys)
                                 for i in range(len(malt_mesh)):
                                     proxy_key = ('compute', name, i)
-                                    scene.proxys[proxy_key] = ComputeShaderProxy(name, i, compute_path)
+                                    scene.proxys[proxy_key] = ComputeShaderProxy(name, i, compute_path, compute_params)
                     else:
                         meshes[name] = None
 

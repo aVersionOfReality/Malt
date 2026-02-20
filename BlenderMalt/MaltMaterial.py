@@ -186,8 +186,9 @@ def reset_materials():
     _MATERIALS = {}
 
 def reset_compute_materials():
-    global _COMPUTE_MATERIALS
+    global _COMPUTE_MATERIALS, __COMPUTE_TIMESTAMP
     _COMPUTE_MATERIALS = {}
+    __COMPUTE_TIMESTAMP = 0
 
 import time
 __TIMESTAMP = time.time()

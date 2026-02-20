@@ -269,7 +269,7 @@ class ComputePipelineGraph(GLSLPipelineGraph):
     def compile_material(self, source, include_paths=[]):
         from Malt.GL.ComputeShader import ComputeShader
         compute_src = self.preprocess_shader_from_source(
-            source, include_paths, ['COMPUTE_SHADER']
+            source, include_paths, ['COMPUTE_STAGE']
         )
         return {'COMPUTE': ComputeShader(compute_src)}
 

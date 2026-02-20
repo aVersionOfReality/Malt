@@ -143,7 +143,7 @@ class Pipeline():
         return Shader(vertex_src, pixel_src)
 
     def compile_compute_shader_from_source(self, source, include_paths=[], defines=[]):
-        compute_src = shader_preprocessor(source, include_paths + self.SHADER_INCLUDE_PATHS, defines + ['COMPUTE_SHADER'])
+        compute_src = shader_preprocessor(source, include_paths + self.SHADER_INCLUDE_PATHS, defines + ['COMPUTE_STAGE'])
         return ComputeShader(compute_src)
 
     def compile_material_from_source(self, material_type, source, include_paths=[]):
@@ -390,8 +390,14 @@ class Pipeline():
                 if not hasattr(m, 'deformed_position_buffer') or m.deformed_position_buffer is None:
                     continue
 
-                compute_shader = getattr(m, 'compute_shader', None)
+                underlying = getattr(m, 'mesh', m)
+                compute_shader = getattr(underlying, 'compute_shader', None)
                 if compute_shader is None:
+                    compute_shader = getattr(m, 'compute_shader', None)
+                if compute_shader is None:
+                    continue
+
+                if compute_shader.error:
                     continue
 
                 compute_shader.bind()
@@ -400,6 +406,13 @@ class Pipeline():
                     compute_shader.uniforms['LOOP_COUNT'].set_value(m.loop_count)
                 if 'TIME' in compute_shader.uniforms:
                     compute_shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
+
+                compute_params = getattr(underlying, 'compute_shader_parameters', None)
+                if compute_params is None:
+                    compute_params = getattr(m, 'compute_shader_parameters', {})
+                for name, value in compute_params.items():
+                    if name in compute_shader.uniforms:
+                        compute_shader.uniforms[name].set_value(value)
 
                 # Bind mesh attribute SSBOs at standard binding points.
                 # Bindings 0–7 mirror the render pass (loop-domain and vertex-domain vec4 attributes).

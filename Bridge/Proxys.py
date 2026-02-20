@@ -65,10 +65,11 @@ class ComputeShaderProxy():
     side, where it sets mesh.compute_shader so run_compute_pass() picks it up.
     """
 
-    def __init__(self, mesh_name, submesh_index, compute_path):
+    def __init__(self, mesh_name, submesh_index, compute_path, shader_parameters=None):
         self.mesh_name = mesh_name
         self.submesh_index = submesh_index
         self.compute_path = compute_path
+        self.shader_parameters = shader_parameters or {}
 
     def resolve(self):
         import Bridge.Mesh
@@ -80,3 +81,4 @@ class ComputeShaderProxy():
         if mesh is None:
             return
         mesh.compute_shader = Bridge.ComputeMaterial.get_compute_shader(self.compute_path)
+        mesh.compute_shader_parameters = self.shader_parameters
