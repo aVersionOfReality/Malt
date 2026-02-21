@@ -190,15 +190,16 @@ class Viewport():
         self.stat_time_start = time.perf_counter()
         
         if scene_update or self.scene is None:
-            # Resolve compute proxies last: they set mesh.compute_shader on
-            # the underlying MeshCustomLoad, which MeshProxy.resolve() must
-            # have already snapshotted via __dict__.update().
+            # Resolve compute proxies FIRST: they set compute_shader and
+            # compute_shader_parameters on the raw MeshCustomLoad.
+            # MeshProxy.resolve() then snapshots MeshCustomLoad.__dict__,
+            # picking up the freshly-set compute attributes for this frame.
             from Bridge.Proxys import ComputeShaderProxy
             for key, proxy in scene.proxys.items():
-                if not isinstance(proxy, ComputeShaderProxy):
+                if isinstance(proxy, ComputeShaderProxy):
                     proxy.resolve()
             for key, proxy in scene.proxys.items():
-                if isinstance(proxy, ComputeShaderProxy):
+                if not isinstance(proxy, ComputeShaderProxy):
                     proxy.resolve()
             
             for obj in scene.objects:
