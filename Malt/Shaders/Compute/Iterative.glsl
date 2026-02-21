@@ -21,7 +21,7 @@
 /*  META
     @meta: label=Iterative Displace; subcategory=Iterative;
     @offset: subtype=Vector;
-    @compute_iterations: default=1; min=1; max=1000;
+    @compute_iterations: default=0; min=0; max=1000;
 */
 void Iterative_Displace(vec3 offset, int compute_iterations, inout vec3 position) {}
 

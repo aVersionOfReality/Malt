@@ -463,24 +463,20 @@ class Pipeline():
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
 
                 # Determine iteration count.
-                # A node parameter named 'compute_iterations' (e.g. from
-                # Iterative_Displace) becomes a uniform like
-                # 'U_0Iterative_Displace_0_0_compute_iterations'.  We scan
-                # all uniforms for that pattern.  The header uniform
-                # 'COMPUTE_ITERATIONS' (default 1) serves as fallback.
+                # Node parameters are always registered in the node tree's
+                # malt_parameters (and thus in compute_params) regardless
+                # of whether the generated GLSL uses a literal or a uniform.
+                # Scanning compute_params is therefore reliable; scanning
+                # shader uniforms is not (the value may be baked as a literal).
                 iterations = 1
-                iter_uniform = None
-                for uname in compute_shader.uniforms:
-                    if 'compute_iterations' in uname.lower():
-                        # Prefer node parameter (longer name) over header uniform.
-                        if iter_uniform is None or len(uname) > len(iter_uniform):
-                            iter_uniform = uname
-                if iter_uniform:
-                    val = compute_shader.uniforms[iter_uniform].value
-                    if hasattr(val, '__len__'):
-                        val = val[0]
-                    if isinstance(val, (int, float)) and val >= 1:
-                        iterations = int(val)
+                for pname, pval in compute_params.items():
+                    if 'compute_iterations' in pname.lower():
+                        val = pval
+                        if hasattr(val, '__len__'):
+                            val = val[0]
+                        if isinstance(val, (int, float)) and val >= 0:
+                            iterations = int(val)
+                        break
 
                 workgroup_size = 64
                 workgroups = math.ceil(m.loop_count / workgroup_size)
