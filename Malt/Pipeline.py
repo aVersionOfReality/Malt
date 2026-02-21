@@ -388,9 +388,18 @@ class Pipeline():
     def run_compute_pass(self, scene_batches):
         """Dispatch compute shaders for all meshes that have one assigned.
 
-        Call this before draw_scene_pass(). The memory barrier issued at the
-        end ensures the deformed position buffer writes are visible to the
-        subsequent vertex shader reads via in_position.
+        Call this before draw_scene_pass().
+
+        Supports multi-dispatch iteration: if the shader declares a
+        COMPUTE_ITERATIONS uniform with value > 1, the shader is dispatched
+        that many times with GL_SHADER_STORAGE_BARRIER_BIT between each
+        dispatch.  The ITERATION uniform (0, 1, 2, ...) is set before each
+        dispatch so main() can choose whether to read from rest buffers
+        (iteration 0) or from the previous dispatch's output (iteration 1+).
+
+        The memory barrier issued at the end ensures the deformed position
+        buffer writes are visible to the subsequent vertex shader reads via
+        in_position.
         """
         any_dispatched = False
 
@@ -436,8 +445,8 @@ class Pipeline():
                 if 'SSBO_ACTIVE_HIGH' in compute_shader.uniforms:
                     compute_shader.uniforms['SSBO_ACTIVE_HIGH'].set_value(ssbo_active_high)
 
-                compute_shader.bind()
-
+                # Bind SSBOs once -- these are context-level state and persist
+                # across bind() calls within the iteration loop below.
                 for i, ssbo in enumerate(m.ssbo_list):
                     if ssbo is not None:
                         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
@@ -453,10 +462,36 @@ class Pipeline():
                 if m.rest_normals_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
 
+                # Determine iteration count from the COMPUTE_ITERATIONS uniform.
+                # Default is 1 (single dispatch, same as before multi-dispatch support).
+                iterations = 1
+                if 'COMPUTE_ITERATIONS' in compute_shader.uniforms:
+                    val = compute_shader.uniforms['COMPUTE_ITERATIONS'].value
+                    if hasattr(val, '__len__'):
+                        val = val[0]
+                    if isinstance(val, (int, float)) and val >= 1:
+                        iterations = int(val)
+
                 workgroup_size = 64
                 workgroups = math.ceil(m.loop_count / workgroup_size)
-                compute_shader.dispatch(workgroups)
-                any_dispatched = True
+
+                for iteration in range(iterations):
+                    # ITERATION is the only uniform that changes per dispatch.
+                    # bind() re-uploads all cached uniform values (including the
+                    # ITERATION we just set and the unchanging ones from above).
+                    if 'ITERATION' in compute_shader.uniforms:
+                        compute_shader.uniforms['ITERATION'].set_value(iteration)
+
+                    compute_shader.bind()
+                    compute_shader.dispatch(workgroups)
+                    any_dispatched = True
+
+                    # Issue a barrier between iterations so the next dispatch sees
+                    # this dispatch's writes to deformed_positions/normals.
+                    # The final barrier (for vertex shader visibility) is issued
+                    # after the outer loop, not here.
+                    if iteration < iterations - 1:
+                        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         if any_dispatched:
             glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT)

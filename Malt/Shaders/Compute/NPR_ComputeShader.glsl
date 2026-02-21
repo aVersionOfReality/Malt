@@ -12,10 +12,18 @@
 // Every .compute.glsl node tree must implement:
 //   void COMPUTE_SHADER(inout vec3 position, inout vec3 normal)
 //
-// main() initialises position from rest_positions and normal from normals, calls
-// COMPUTE_SHADER, then writes updated position/normal back to deformed_positions/normals.
+// main() initialises position from rest_positions and normal from rest_normals on the
+// first iteration (ITERATION == 0), and from deformed_positions/normals on subsequent
+// iterations.  After COMPUTE_SHADER returns, the updated position/normal are written
+// back to deformed_positions/normals.
 // Unconnected inout sockets pass through the original values unchanged.
 // Use gl_GlobalInvocationID.x inside COMPUTE_SHADER to get the current loop index.
+//
+// Multi-dispatch iteration:
+//   COMPUTE_ITERATIONS controls how many times Python dispatches this shader per frame.
+//   ITERATION is set by Python before each dispatch (0, 1, 2, ...).
+//   On ITERATION 0, position/normal are initialised from the immutable rest buffers.
+//   On ITERATION 1+, they are read from the previous dispatch's output buffers.
 //
 // NOTE: The conditional compilation guard is COMPUTE_STAGE (not COMPUTE_SHADER), because
 // COMPUTE_SHADER is also the GLSL function name. Defining a macro with the same name as a
@@ -74,6 +82,8 @@ layout(std430, binding = 12) readonly buffer REST_NORMALS {
 };
 
 uniform uint LOOP_COUNT = 0u;
+uniform uint COMPUTE_ITERATIONS = 1u;  // Total iterations — read by Python dispatch loop
+uniform uint ITERATION = 0u;           // Current iteration — set by Python before each dispatch
 
 // When the user's compute graph provides an implementation, CUSTOM_COMPUTE_SHADER is
 // defined by generate_source() and the forward declaration below is used (the actual
@@ -89,8 +99,17 @@ void COMPUTE_SHADER(inout vec3 position, inout vec3 normal) { }
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= LOOP_COUNT) return;
-    vec3 position = rest_positions[idx].xyz;
-    vec3 normal   = rest_normals[idx].xyz;   // always the original mesh normal
+    vec3 position;
+    vec3 normal;
+    if (ITERATION == 0u) {
+        // First iteration: start from the immutable rest-pose data.
+        position = rest_positions[idx].xyz;
+        normal   = rest_normals[idx].xyz;
+    } else {
+        // Subsequent iterations: build on the previous dispatch's output.
+        position = deformed_positions[idx].xyz;
+        normal   = normals[idx].xyz;
+    }
     COMPUTE_SHADER(position, normal);
     deformed_positions[idx] = vec4(position, 0.0);
     normals[idx]            = vec4(normal,   0.0);
