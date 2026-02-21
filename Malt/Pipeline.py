@@ -462,11 +462,21 @@ class Pipeline():
                 if m.rest_normals_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
 
-                # Determine iteration count from the COMPUTE_ITERATIONS uniform.
-                # Default is 1 (single dispatch, same as before multi-dispatch support).
+                # Determine iteration count.
+                # A node parameter named 'compute_iterations' (e.g. from
+                # Iterative_Displace) becomes a uniform like
+                # 'U_0Iterative_Displace_0_0_compute_iterations'.  We scan
+                # all uniforms for that pattern.  The header uniform
+                # 'COMPUTE_ITERATIONS' (default 1) serves as fallback.
                 iterations = 1
-                if 'COMPUTE_ITERATIONS' in compute_shader.uniforms:
-                    val = compute_shader.uniforms['COMPUTE_ITERATIONS'].value
+                iter_uniform = None
+                for uname in compute_shader.uniforms:
+                    if 'compute_iterations' in uname.lower():
+                        # Prefer node parameter (longer name) over header uniform.
+                        if iter_uniform is None or len(uname) > len(iter_uniform):
+                            iter_uniform = uname
+                if iter_uniform:
+                    val = compute_shader.uniforms[iter_uniform].value
                     if hasattr(val, '__len__'):
                         val = val[0]
                     if isinstance(val, (int, float)) and val >= 1:

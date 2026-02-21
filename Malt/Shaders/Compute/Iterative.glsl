@@ -21,13 +21,17 @@
 /*  META
     @meta: label=Iterative Displace; subcategory=Iterative;
     @offset: subtype=Vector;
+    @compute_iterations: default=1; min=1; max=1000;
 */
-void Iterative_Displace(vec3 offset, inout vec3 position) {}
+void Iterative_Displace(vec3 offset, int compute_iterations, inout vec3 position) {}
 
 #else // COMPUTE_STAGE
 
-void Iterative_Displace(vec3 offset, inout vec3 position)
+void Iterative_Displace(vec3 offset, int compute_iterations, inout vec3 position)
 {
+    // compute_iterations is read by Pipeline.py to control the dispatch loop.
+    // It is intentionally unused in GLSL — the iteration count is a Python-side
+    // concern, not a per-invocation operation.
     position += offset;
 }
 
