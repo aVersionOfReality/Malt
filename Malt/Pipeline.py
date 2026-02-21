@@ -478,26 +478,41 @@ class Pipeline():
                             iterations = int(val)
                         break
 
+                # Tell the shader how many iterations were requested so
+                # main() can skip COMPUTE_SHADER when iterations == 0.
+                if 'COMPUTE_ITERATIONS' in compute_shader.uniforms:
+                    compute_shader.uniforms['COMPUTE_ITERATIONS'].set_value(iterations)
+
                 workgroup_size = 64
                 workgroups = math.ceil(m.loop_count / workgroup_size)
 
-                for iteration in range(iterations):
-                    # ITERATION is the only uniform that changes per dispatch.
-                    # bind() re-uploads all cached uniform values (including the
-                    # ITERATION we just set and the unchanging ones from above).
+                if iterations == 0:
+                    # Dispatch once to copy rest→deformed (reset to rest pose).
+                    # main() reads rest buffers (ITERATION=0) and skips
+                    # COMPUTE_SHADER (COMPUTE_ITERATIONS=0).
                     if 'ITERATION' in compute_shader.uniforms:
-                        compute_shader.uniforms['ITERATION'].set_value(iteration)
-
+                        compute_shader.uniforms['ITERATION'].set_value(0)
                     compute_shader.bind()
                     compute_shader.dispatch(workgroups)
                     any_dispatched = True
+                else:
+                    for iteration in range(iterations):
+                        # ITERATION is the only uniform that changes per dispatch.
+                        # bind() re-uploads all cached uniform values (including the
+                        # ITERATION we just set and the unchanging ones from above).
+                        if 'ITERATION' in compute_shader.uniforms:
+                            compute_shader.uniforms['ITERATION'].set_value(iteration)
 
-                    # Issue a barrier between iterations so the next dispatch sees
-                    # this dispatch's writes to deformed_positions/normals.
-                    # The final barrier (for vertex shader visibility) is issued
-                    # after the outer loop, not here.
-                    if iteration < iterations - 1:
-                        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+                        compute_shader.bind()
+                        compute_shader.dispatch(workgroups)
+                        any_dispatched = True
+
+                        # Issue a barrier between iterations so the next dispatch sees
+                        # this dispatch's writes to deformed_positions/normals.
+                        # The final barrier (for vertex shader visibility) is issued
+                        # after the outer loop, not here.
+                        if iteration < iterations - 1:
+                            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         if any_dispatched:
             glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT)

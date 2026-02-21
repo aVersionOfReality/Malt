@@ -110,7 +110,12 @@ void main() {
         position = deformed_positions[idx].xyz;
         normal   = normals[idx].xyz;
     }
-    COMPUTE_SHADER(position, normal);
+    // COMPUTE_ITERATIONS == 0 means "skip": copy rest→deformed without
+    // running the user's node graph.  Python still dispatches once so the
+    // buffers are reset to rest pose.
+    if (COMPUTE_ITERATIONS > 0u) {
+        COMPUTE_SHADER(position, normal);
+    }
     deformed_positions[idx] = vec4(position, 0.0);
     normals[idx]            = vec4(normal,   0.0);
 }
