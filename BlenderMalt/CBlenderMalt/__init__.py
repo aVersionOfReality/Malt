@@ -30,3 +30,9 @@ mesh_tangents.argtypes = [
     ctypes.POINTER(ctypes.c_float)
 ]
 mesh_tangents.restype = ctypes.c_bool
+
+pad_vec3_to_vec4 = CBlenderMalt['pad_vec3_to_vec4']
+pad_vec3_to_vec4.argtypes = [
+    ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int
+]
+pad_vec3_to_vec4.restype = None

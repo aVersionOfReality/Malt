@@ -71,11 +71,7 @@ def load_mesh(object, name):
     rest_positions = get_load_buffer('rest_positions', ctypes.c_float, loop_count * 4)
     pos_src = ctypes.cast(positions.buffer(), ctypes.POINTER(ctypes.c_float))
     pos_dst = ctypes.cast(rest_positions.buffer(), ctypes.POINTER(ctypes.c_float))
-    for j in range(loop_count):
-        pos_dst[j*4]   = pos_src[j*3]
-        pos_dst[j*4+1] = pos_src[j*3+1]
-        pos_dst[j*4+2] = pos_src[j*3+2]
-        pos_dst[j*4+3] = 0.0
+    CBlenderMalt.pad_vec3_to_vec4(pos_src, pos_dst, loop_count)
 
     # corner_vert: loop index → unique vertex index mapping (binding 10).
     # Lets compute shaders work in vertex space and scatter results back to corners.
@@ -91,11 +87,7 @@ def load_mesh(object, name):
     normals = get_load_buffer('normals', ctypes.c_float, loop_count * 4)
     norm_src = (ctypes.c_float * (loop_count * 3)).from_address(m.corner_normals[0].as_pointer())
     norm_dst = ctypes.cast(normals.buffer(), ctypes.POINTER(ctypes.c_float))
-    for j in range(loop_count):
-        norm_dst[j*4]   = norm_src[j*3]
-        norm_dst[j*4+1] = norm_src[j*3+1]
-        norm_dst[j*4+2] = norm_src[j*3+2]
-        norm_dst[j*4+3] = 0.0
+    CBlenderMalt.pad_vec3_to_vec4(norm_src, norm_dst, loop_count)
 
     # Rest normals: read-only copy of the original Blender normals (binding 12).
     # main() in NPR_ComputeShader.glsl initialises the 'normal' inout parameter from
@@ -234,7 +226,6 @@ def load_mesh(object, name):
         'rest_positions': rest_positions,
         'rest_normals': rest_normals,
         'corner_vert': corner_vert,
-        'normals_ssbo': None,
     }
 
     from . import MaltPipeline

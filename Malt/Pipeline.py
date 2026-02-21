@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, normals_ssbo=None):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -400,15 +400,11 @@ class Pipeline():
                 if not hasattr(m, 'deformed_position_buffer') or m.deformed_position_buffer is None:
                     continue
 
-                underlying = getattr(m, 'mesh', m)
-                compute_shader = getattr(underlying, 'compute_shader', None)
-                if compute_shader is None:
-                    compute_shader = getattr(m, 'compute_shader', None)
+                compute_shader = getattr(m, 'compute_shader', None)
                 if compute_shader is None:
                     continue
 
                 if compute_shader.error:
-                    print(f'COMPUTE SHADER SKIPPED (error): {getattr(m, "name", "?")}  —  {compute_shader.error[:120]}')
                     continue
 
                 # Cache all uniform values BEFORE bind() so that bind()'s bulk upload
@@ -418,9 +414,7 @@ class Pipeline():
                 if 'TIME' in compute_shader.uniforms:
                     compute_shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
 
-                compute_params = getattr(underlying, 'compute_shader_parameters', None)
-                if compute_params is None:
-                    compute_params = getattr(m, 'compute_shader_parameters', {})
+                compute_params = getattr(m, 'compute_shader_parameters', {})
                 for name, value in compute_params.items():
                     if name in compute_shader.uniforms:
                         compute_shader.uniforms[name].set_value(value)
@@ -449,14 +443,14 @@ class Pipeline():
                         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
 
                 # Compute-specific SSBOs
-                if hasattr(m, 'rest_position_ssbo') and m.rest_position_ssbo is not None:
+                if m.rest_position_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
                 if m.corner_vert_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m.corner_vert_ssbo.buffer[0])
                 if m.normal is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m.normal[0])
-                if hasattr(m, 'rest_normals_ssbo') and m.rest_normals_ssbo is not None:
+                if m.rest_normals_ssbo is not None:
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
 
                 workgroup_size = 64
@@ -465,7 +459,7 @@ class Pipeline():
                 any_dispatched = True
 
         if any_dispatched:
-            glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT)
+            glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT)
 
     def draw_scene_pass(self, render_target, scene_batches, pass_name=None, default_shader=None, shader_resources={}, depth_test_function=GL_LEQUAL):
         glDisable(GL_BLEND)

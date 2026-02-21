@@ -104,3 +104,14 @@ EXPORT bool mesh_tangents(
 
   return genTangSpaceDefault(&mtc);
 }
+
+EXPORT void pad_vec3_to_vec4(float* src, float* dst, int count)
+{
+  for (int i = 0; i < count; i++)
+  {
+    dst[i*4+0] = src[i*3+0];
+    dst[i*4+1] = src[i*3+1];
+    dst[i*4+2] = src[i*3+2];
+    dst[i*4+3] = 0.0f;
+  }
+}
