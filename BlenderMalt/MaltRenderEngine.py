@@ -142,10 +142,32 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                             compute_path = compute_tree.get_generated_source_path()
                             if compute_path:
                                 from Bridge.Proxys import ComputeShaderProxy
-                                compute_params = compute_tree.malt_parameters.get_parameters(overrides, scene.proxys)
+                                all_params = compute_tree.malt_parameters.get_parameters(overrides, scene.proxys)
+                                # Filter to only parameters from linked (connected)
+                                # nodes.  Prevents marker-node parameters (e.g.
+                                # smooth_iterations from a disconnected
+                                # Laplacian_Smooth) from leaking into
+                                # compute_shader_parameters and causing unintended
+                                # dispatch behavior in Pipeline.run_compute_pass().
+                                linked_keys_raw = compute_tree.get('linked_param_keys')
+                                if linked_keys_raw is not None:
+                                    linked_keys = set(linked_keys_raw)
+                                    compute_params = {k: v for k, v in all_params.items() if k in linked_keys}
+                                else:
+                                    compute_params = all_params  # fallback: keys not yet computed
+                                dispatch_plan_raw = compute_tree.get('dispatch_plan')
+                                # Convert IDProperty types to plain Python dicts/lists
+                                # so the dispatch plan survives pickle serialization
+                                # across the Bridge process boundary.
+                                if dispatch_plan_raw:
+                                    dispatch_plan = [dict(step) for step in dispatch_plan_raw]
+                                else:
+                                    dispatch_plan = None
                                 for i in range(len(malt_mesh)):
                                     proxy_key = ('compute', name, i)
-                                    scene.proxys[proxy_key] = ComputeShaderProxy(name, i, compute_path, compute_params)
+                                    scene.proxys[proxy_key] = ComputeShaderProxy(
+                                        name, i, compute_path, compute_params,
+                                        dispatch_plan=dispatch_plan)
                     else:
                         meshes[name] = None
 

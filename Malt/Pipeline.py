@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -225,6 +225,26 @@ class Pipeline():
             corner_vert_ssbo = SSBO()
             corner_vert_ssbo.load_raw(corner_vert.buffer(), corner_vert.size_in_bytes())
 
+        adjacency_data_ssbo = None
+        if adjacency_data is not None:
+            adjacency_data_ssbo = SSBO()
+            adjacency_data_ssbo.load_raw(adjacency_data.buffer(), adjacency_data.size_in_bytes())
+
+        vert_corner_data_ssbo = None
+        if vert_corner_data is not None:
+            vert_corner_data_ssbo = SSBO()
+            vert_corner_data_ssbo.load_raw(vert_corner_data.buffer(), vert_corner_data.size_in_bytes())
+
+        # Scratch buffer for Laplacian smooth ping-pong (same size as deformed_positions).
+        smooth_scratch_ssbo = None
+        if loop_count > 0:
+            smooth_scratch_ssbo = SSBO()
+            scratch_size = loop_count * 16  # vec4 per loop
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, smooth_scratch_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, scratch_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            smooth_scratch_ssbo.size = scratch_size
+
         results = []
 
         for i, index in enumerate(indices):
@@ -253,6 +273,9 @@ class Pipeline():
             result.rest_normals_ssbo = rest_normals_ssbo
             result.deformed_position_buffer = deformed_position_buffer
             result.corner_vert_ssbo = corner_vert_ssbo
+            result.adjacency_data_ssbo = adjacency_data_ssbo
+            result.vert_corner_data_ssbo = vert_corner_data_ssbo
+            result.smooth_scratch_ssbo = smooth_scratch_ssbo
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE, stride=0):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -385,17 +408,193 @@ class Pipeline():
             
         return result
     
+    _smooth_kernel = None
+
+    def _get_smooth_kernel(self):
+        """Lazy-compile the Laplacian smoothing kernel (cached on the class)."""
+        if Pipeline._smooth_kernel is not None:
+            return Pipeline._smooth_kernel
+        kernel_path = path.join(SHADER_DIR, 'ComputeKernels', 'Laplacian_Smooth_Kernel.glsl')
+        try:
+            with open(kernel_path) as f:
+                source = '#define COMPUTE_STAGE\n' + f.read()
+            Pipeline._smooth_kernel = ComputeShader(source)
+            if Pipeline._smooth_kernel.error:
+                LOG.error(f'SMOOTH KERNEL ERROR: {Pipeline._smooth_kernel.error}')
+        except Exception as e:
+            LOG.error(f'Failed to load smooth kernel: {e}')
+            Pipeline._smooth_kernel = ComputeShader(None)
+        return Pipeline._smooth_kernel
+
+    def _bind_compute_ssbos(self, m, shader):
+        """Bind mesh attribute and compute-specific SSBOs for a compute shader."""
+        # Face-corner attribute SSBOs (bindings 0–7)
+        ssbo_active = tuple(s is not None for s in m.ssbo_list[:4])
+        ssbo_active_high = tuple(s is not None for s in m.ssbo_list[4:8])
+        if 'SSBO_ACTIVE' in shader.uniforms:
+            shader.uniforms['SSBO_ACTIVE'].set_value(ssbo_active)
+        if 'SSBO_ACTIVE_HIGH' in shader.uniforms:
+            shader.uniforms['SSBO_ACTIVE_HIGH'].set_value(ssbo_active_high)
+
+        for i, ssbo in enumerate(m.ssbo_list):
+            if ssbo is not None:
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
+
+        # Compute-specific SSBOs (bindings 8–14)
+        if m.rest_position_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
+        if m.corner_vert_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m.corner_vert_ssbo.buffer[0])
+        if m.normal is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m.normal[0])
+        if m.rest_normals_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
+        if m.adjacency_data_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, m.adjacency_data_ssbo.buffer[0])
+        if m.vert_corner_data_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 14, m.vert_corner_data_ssbo.buffer[0])
+
+    def _run_smooth_step(self, m, step, compute_params, workgroups):
+        """Run a single Laplacian smooth dispatch step (ping-pong kernel)."""
+        # Read smooth params by exact key from the dispatch plan.
+        si = 0
+        ss = 0.5
+        iter_key = step.get('iterations_key', '')
+        str_key = step.get('strength_key', '')
+        if iter_key in compute_params:
+            val = compute_params[iter_key]
+            if hasattr(val, '__len__'):
+                val = val[0]
+            if isinstance(val, (int, float)) and val >= 0:
+                si = int(val)
+        if str_key in compute_params:
+            val = compute_params[str_key]
+            if hasattr(val, '__len__'):
+                val = val[0]
+            if isinstance(val, (int, float)):
+                ss = float(val)
+
+        if si <= 0 or m.smooth_scratch_ssbo is None:
+            return False
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        smooth_kernel = self._get_smooth_kernel()
+        if smooth_kernel is None or smooth_kernel.error:
+            return False
+        if 'LOOP_COUNT' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+        if 'VERTEX_COUNT' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
+        if 'SMOOTH_STRENGTH' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['SMOOTH_STRENGTH'].set_value(ss)
+
+        buf_a = m.deformed_position_buffer[0]
+        buf_b = m.smooth_scratch_ssbo.buffer[0]
+        for s_iter in range(si):
+            if s_iter % 2 == 0:
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_b)
+            else:
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_b)
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_a)
+
+            smooth_kernel.bind()
+            smooth_kernel.dispatch(workgroups)
+
+            if s_iter < si - 1:
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        # Ensure the last smooth dispatch is visible before any subsequent
+        # segment shader reads from deformed_positions.
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        if si % 2 == 1:
+            # Odd iteration count: result is in buf_b, copy back to buf_a.
+            copy_size = m.smooth_scratch_ssbo.size
+            glBindBuffer(GL_COPY_READ_BUFFER, buf_b)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+            glBindBuffer(GL_COPY_READ_BUFFER, 0)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
+        return True
+
+    def _dispatch_shader_segment(self, m, shader, seg_index, iterations, compute_params, workgroups):
+        """Dispatch a single compute shader segment with iteration support."""
+        if 'LOOP_COUNT' in shader.uniforms:
+            shader.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+        if 'VERTEX_COUNT' in shader.uniforms:
+            shader.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
+        if 'TIME' in shader.uniforms:
+            shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
+        if 'SEGMENT_INDEX' in shader.uniforms:
+            shader.uniforms['SEGMENT_INDEX'].set_value(seg_index)
+
+        for name, value in compute_params.items():
+            if name in shader.uniforms:
+                shader.uniforms[name].set_value(value)
+
+        if 'COMPUTE_ITERATIONS' in shader.uniforms:
+            shader.uniforms['COMPUTE_ITERATIONS'].set_value(iterations)
+
+        self._bind_compute_ssbos(m, shader)
+
+        if iterations == 0:
+            if 'ITERATION' in shader.uniforms:
+                shader.uniforms['ITERATION'].set_value(0)
+            shader.bind()
+            shader.dispatch(workgroups)
+        else:
+            for iteration in range(iterations):
+                if 'ITERATION' in shader.uniforms:
+                    shader.uniforms['ITERATION'].set_value(iteration)
+                shader.bind()
+                shader.dispatch(workgroups)
+                if iteration < iterations - 1:
+                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+    def _run_dispatch_plan(self, m, dispatch_plan, compute_params, workgroups):
+        """Execute a multi-segment dispatch plan step by step."""
+        for step in dispatch_plan:
+            if step['type'] == 'segment':
+                shader = step.get('shader')
+                if shader is None or (hasattr(shader, 'error') and shader.error):
+                    continue
+
+                # Per-segment iteration count.
+                iterations = 1
+                iter_param = step.get('iteration_param')
+                if iter_param:
+                    for pname, pval in compute_params.items():
+                        if iter_param in pname.lower():
+                            val = pval
+                            if hasattr(val, '__len__'):
+                                val = val[0]
+                            if isinstance(val, (int, float)) and val >= 0:
+                                iterations = max(iterations, int(val))
+
+                self._dispatch_shader_segment(
+                    m, shader, step['index'], iterations, compute_params, workgroups)
+
+            elif step['type'] == 'smooth':
+                self._run_smooth_step(m, step, compute_params, workgroups)
+
     def run_compute_pass(self, scene_batches):
         """Dispatch compute shaders for all meshes that have one assigned.
 
         Call this before draw_scene_pass().
 
-        Supports multi-dispatch iteration: if the shader declares a
-        COMPUTE_ITERATIONS uniform with value > 1, the shader is dispatched
-        that many times with GL_SHADER_STORAGE_BARRIER_BIT between each
-        dispatch.  The ITERATION uniform (0, 1, 2, ...) is set before each
-        dispatch so main() can choose whether to read from rest buffers
-        (iteration 0) or from the previous dispatch's output (iteration 1+).
+        Supports two modes:
+        1. Single-shader (legacy): one compute shader dispatched with iterations,
+           followed by Laplacian smooth passes scanned from parameters.
+        2. Multi-segment dispatch plan: when the graph has barrier nodes (e.g.
+           Laplacian Smooth), the graph is split into segments with smooth
+           kernels interleaved between them.
 
         The memory barrier issued at the end ensures the deformed position
         buffer writes are visible to the subsequent vertex shader reads via
@@ -416,58 +615,32 @@ class Pipeline():
                 if compute_shader.error:
                     continue
 
-                # Cache all uniform values BEFORE bind() so that bind()'s bulk upload
-                # sends the current frame's values rather than last frame's.
+                compute_params = getattr(m, 'compute_shader_parameters', {})
+                workgroup_size = 64
+                workgroups = math.ceil(m.loop_count / workgroup_size)
+
+                # ── Multi-segment dispatch plan ──
+                dispatch_plan = getattr(m, 'dispatch_plan', None)
+                if dispatch_plan is not None:
+                    self._run_dispatch_plan(m, dispatch_plan, compute_params, workgroups)
+                    any_dispatched = True
+                    continue
+
+                # ── Single-shader legacy path ──
                 if 'LOOP_COUNT' in compute_shader.uniforms:
                     compute_shader.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+                if 'VERTEX_COUNT' in compute_shader.uniforms:
+                    compute_shader.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
                 if 'TIME' in compute_shader.uniforms:
                     compute_shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
 
-                compute_params = getattr(m, 'compute_shader_parameters', {})
                 for name, value in compute_params.items():
                     if name in compute_shader.uniforms:
                         compute_shader.uniforms[name].set_value(value)
 
-                # Bind mesh attribute SSBOs at standard binding points.
-                # Bindings 0–7 mirror the render pass (loop-domain vec4 face-corner attributes).
-                # Bindings 8–12 are compute-specific:
-                #   8  = rest_positions  (loop-indexed vec4[], read-only original positions)
-                #   9  = deformed_positions (loop-indexed vec4[], read-write compute output)
-                #   10 = corner_vert     (loop-indexed int[], loop→vertex mapping)
-                #   11 = normals         (loop-indexed vec4[], read-write compute output)
-                #   12 = rest_normals    (loop-indexed vec4[], read-only original normals)
-
-                # Face-corner attribute SSBOs (bindings 0–7)
-                ssbo_active = tuple(s is not None for s in m.ssbo_list[:4])
-                ssbo_active_high = tuple(s is not None for s in m.ssbo_list[4:8])
-                if 'SSBO_ACTIVE' in compute_shader.uniforms:
-                    compute_shader.uniforms['SSBO_ACTIVE'].set_value(ssbo_active)
-                if 'SSBO_ACTIVE_HIGH' in compute_shader.uniforms:
-                    compute_shader.uniforms['SSBO_ACTIVE_HIGH'].set_value(ssbo_active_high)
-
-                # Bind SSBOs once -- these are context-level state and persist
-                # across bind() calls within the iteration loop below.
-                for i, ssbo in enumerate(m.ssbo_list):
-                    if ssbo is not None:
-                        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
-
-                # Compute-specific SSBOs
-                if m.rest_position_ssbo is not None:
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
-                if m.corner_vert_ssbo is not None:
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m.corner_vert_ssbo.buffer[0])
-                if m.normal is not None:
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m.normal[0])
-                if m.rest_normals_ssbo is not None:
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m.rest_normals_ssbo.buffer[0])
+                self._bind_compute_ssbos(m, compute_shader)
 
                 # Determine iteration count.
-                # Node parameters are always registered in the node tree's
-                # malt_parameters (and thus in compute_params) regardless
-                # of whether the generated GLSL uses a literal or a uniform.
-                # Scanning compute_params is therefore reliable; scanning
-                # shader uniforms is not (the value may be baked as a literal).
                 iterations = 1
                 for pname, pval in compute_params.items():
                     if 'compute_iterations' in pname.lower():
@@ -475,21 +648,12 @@ class Pipeline():
                         if hasattr(val, '__len__'):
                             val = val[0]
                         if isinstance(val, (int, float)) and val >= 0:
-                            iterations = int(val)
-                        break
+                            iterations = max(iterations, int(val))
 
-                # Tell the shader how many iterations were requested so
-                # main() can skip COMPUTE_SHADER when iterations == 0.
                 if 'COMPUTE_ITERATIONS' in compute_shader.uniforms:
                     compute_shader.uniforms['COMPUTE_ITERATIONS'].set_value(iterations)
 
-                workgroup_size = 64
-                workgroups = math.ceil(m.loop_count / workgroup_size)
-
                 if iterations == 0:
-                    # Dispatch once to copy rest→deformed (reset to rest pose).
-                    # main() reads rest buffers (ITERATION=0) and skips
-                    # COMPUTE_SHADER (COMPUTE_ITERATIONS=0).
                     if 'ITERATION' in compute_shader.uniforms:
                         compute_shader.uniforms['ITERATION'].set_value(0)
                     compute_shader.bind()
@@ -497,22 +661,83 @@ class Pipeline():
                     any_dispatched = True
                 else:
                     for iteration in range(iterations):
-                        # ITERATION is the only uniform that changes per dispatch.
-                        # bind() re-uploads all cached uniform values (including the
-                        # ITERATION we just set and the unchanging ones from above).
                         if 'ITERATION' in compute_shader.uniforms:
                             compute_shader.uniforms['ITERATION'].set_value(iteration)
-
                         compute_shader.bind()
                         compute_shader.dispatch(workgroups)
                         any_dispatched = True
-
-                        # Issue a barrier between iterations so the next dispatch sees
-                        # this dispatch's writes to deformed_positions/normals.
-                        # The final barrier (for vertex shader visibility) is issued
-                        # after the outer loop, not here.
                         if iteration < iterations - 1:
                             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+                # ── Laplacian smooth passes (legacy: after graph dispatch) ──
+                smooth_steps = {}
+                for pname, pval in compute_params.items():
+                    key = pname.lower()
+                    if 'smooth_iterations' not in key and 'smooth_strength' not in key:
+                        continue
+                    parts = key.rsplit('_0_', 1)
+                    if len(parts) != 2:
+                        continue
+                    prefix, param = parts
+                    if prefix not in smooth_steps:
+                        smooth_steps[prefix] = {'iterations': 0, 'strength': 0.5}
+                    val = pval
+                    if hasattr(val, '__len__'):
+                        val = val[0]
+                    if param == 'smooth_iterations':
+                        if isinstance(val, (int, float)) and val >= 0:
+                            smooth_steps[prefix]['iterations'] = int(val)
+                    elif param == 'smooth_strength':
+                        if isinstance(val, (int, float)):
+                            smooth_steps[prefix]['strength'] = float(val)
+
+                for step in smooth_steps.values():
+                    si = step['iterations']
+                    ss = step['strength']
+                    if si <= 0:
+                        continue
+                    if m.smooth_scratch_ssbo is None:
+                        continue
+
+                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+                    smooth_kernel = self._get_smooth_kernel()
+                    if smooth_kernel is None or smooth_kernel.error:
+                        continue
+                    if 'LOOP_COUNT' in smooth_kernel.uniforms:
+                        smooth_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+                    if 'VERTEX_COUNT' in smooth_kernel.uniforms:
+                        smooth_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
+                    if 'SMOOTH_STRENGTH' in smooth_kernel.uniforms:
+                        smooth_kernel.uniforms['SMOOTH_STRENGTH'].set_value(ss)
+
+                    buf_a = m.deformed_position_buffer[0]
+                    buf_b = m.smooth_scratch_ssbo.buffer[0]
+                    for s_iter in range(si):
+                        if s_iter % 2 == 0:
+                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
+                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_b)
+                        else:
+                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_b)
+                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_a)
+
+                        smooth_kernel.bind()
+                        smooth_kernel.dispatch(workgroups)
+                        any_dispatched = True
+
+                        if s_iter < si - 1:
+                            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+                    if si % 2 == 1:
+                        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+                        copy_size = m.smooth_scratch_ssbo.size
+                        glBindBuffer(GL_COPY_READ_BUFFER, buf_b)
+                        glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
+                        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+                        glBindBuffer(GL_COPY_READ_BUFFER, 0)
+                        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
 
         if any_dispatched:
             glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT)

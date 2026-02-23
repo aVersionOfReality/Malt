@@ -17,4 +17,6 @@ def load_mesh(pipeline, msg):
         rest_positions = data.get('rest_positions', None),
         rest_normals = data.get('rest_normals', None),
         corner_vert = data.get('corner_vert', None),
+        adjacency_data = data.get('adjacency_data', None),
+        vert_corner_data = data.get('vert_corner_data', None),
     )

@@ -261,6 +261,15 @@ def track_compute_shader_changes():
 
         needs_update = []
 
+        def _check_path(p):
+            """Add *p* to needs_update if it exists and is newer than the last check."""
+            if p and p not in needs_update and os.path.exists(p):
+                stats = os.stat(p)
+                if p not in _COMPUTE_MATERIALS or stats.st_mtime > __COMPUTE_TIMESTAMP:
+                    if p not in _COMPUTE_MATERIALS:
+                        _COMPUTE_MATERIALS[p] = None
+                    needs_update.append(p)
+
         for mesh in bpy.data.meshes:
             tree_name = getattr(mesh, 'malt_compute_nodes', '')
             if not tree_name:
@@ -270,16 +279,16 @@ def track_compute_shader_changes():
                 continue
             if not hasattr(node_tree, 'get_generated_source_path'):
                 continue
-            path = node_tree.get_generated_source_path()
-            if not path:
-                continue
-            if path not in needs_update:
-                if os.path.exists(path):
-                    stats = os.stat(path)
-                    if path not in _COMPUTE_MATERIALS or stats.st_mtime > __COMPUTE_TIMESTAMP:
-                        if path not in _COMPUTE_MATERIALS:
-                            _COMPUTE_MATERIALS[path] = None
-                        needs_update.append(path)
+
+            dispatch_plan = node_tree.get('dispatch_plan') if hasattr(node_tree, 'get') else None
+            if dispatch_plan:
+                # Multi-segment: check each segment file.
+                for step in dispatch_plan:
+                    if step['type'] == 'segment':
+                        _check_path(step['path'])
+            else:
+                # Single-segment: check the single file.
+                _check_path(node_tree.get_generated_source_path())
 
         compiled = {}
         from . import MaltPipeline

@@ -312,30 +312,36 @@ class NPR_Pipeline(Pipeline):
         if self.sampling_grid_size != scene.world_parameters['Samples.Grid Size']:
             self.sampling_grid_size = scene.world_parameters['Samples.Grid Size']
             self.samples = None
-        
+
         self.is_new_frame = is_new_frame
-        
+
         sample_offset = self.get_sample(scene.world_parameters['Samples.Width'])
 
         opaque_batches, transparent_batches = self.get_scene_batches(scene)
-        
+
         self.common_buffer.load(scene, resolution, sample_offset, self.sample_count)
         scene.shader_resources = {
             'COMMON_UNIFORMS' : self.common_buffer
         }
-        
+
         result = {
             'COLOR': None,
             'DEPTH': None,
         }
+
+        # Dispatch compute shaders before the render graph draws geometry.
+        # This updates deformed_position_buffer for meshes that have a compute
+        # shader assigned, so the vertex shader reads the deformed positions.
+        self.run_compute_pass(scene.batches)
+
         graph = scene.world_parameters['Render']
         if graph:
             IN = {'Scene' : scene}
             OUT = {'Color' : None}
             self.graphs['Render'].run_source(self, graph['source'], graph['parameters'], IN, OUT)
             result = OUT
-            result['COLOR'] = result['Color']
-            result['DEPTH'] = result['Depth']
+            result['COLOR'] = result.get('Color')
+            result['DEPTH'] = result.get('Depth')
 
         #COMPOSITE DEPTH
         if is_final_render and result['DEPTH'] is None:

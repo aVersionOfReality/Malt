@@ -97,6 +97,7 @@ class RenderLayers(PipelineNode):
                 self.layer_index += 1     
             
             self.blend_transparency(self.fbo_opaque.targets, self.fbo_transparent.targets, self.fbo_color)
+
             outputs.update(self.color_targets)
 
 

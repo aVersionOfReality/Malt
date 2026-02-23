@@ -63,13 +63,19 @@ class ComputeShaderProxy():
 
     Created on the Blender side (client process) and resolved on the server
     side, where it sets mesh.compute_shader so run_compute_pass() picks it up.
+
+    When *dispatch_plan* is provided (graph has barrier nodes), the proxy
+    resolves each segment shader and attaches the full plan to the mesh
+    for Pipeline.run_compute_pass() to execute step by step.
     """
 
-    def __init__(self, mesh_name, submesh_index, compute_path, shader_parameters=None):
+    def __init__(self, mesh_name, submesh_index, compute_path,
+                 shader_parameters=None, dispatch_plan=None):
         self.mesh_name = mesh_name
         self.submesh_index = submesh_index
         self.compute_path = compute_path
         self.shader_parameters = shader_parameters or {}
+        self.dispatch_plan = dispatch_plan
 
     def resolve(self):
         import Bridge.Mesh
@@ -80,5 +86,24 @@ class ComputeShaderProxy():
         mesh = meshes[self.submesh_index]
         if mesh is None:
             return
-        mesh.compute_shader = Bridge.ComputeMaterial.get_compute_shader(self.compute_path)
+
+        if self.dispatch_plan:
+            # Multi-segment: resolve each segment shader in the plan.
+            resolved_plan = []
+            for step in self.dispatch_plan:
+                if step['type'] == 'segment':
+                    shader = Bridge.ComputeMaterial.get_compute_shader(step['path'])
+                    resolved_plan.append({**step, 'shader': shader})
+                else:
+                    resolved_plan.append(step)
+            mesh.dispatch_plan = resolved_plan
+            # For backward compat checks, set compute_shader to first segment.
+            first_seg = next((s for s in resolved_plan if s['type'] == 'segment'), None)
+            mesh.compute_shader = first_seg.get('shader') if first_seg else None
+        else:
+            # Single-segment: existing behavior.
+            shader = Bridge.ComputeMaterial.get_compute_shader(self.compute_path)
+            mesh.compute_shader = shader
+            mesh.dispatch_plan = None
+
         mesh.compute_shader_parameters = self.shader_parameters

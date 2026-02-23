@@ -79,6 +79,56 @@ def load_mesh(object, name):
     corner_vert_src = attribute_ptr(".corner_vert", ctypes.c_int)
     ctypes.memmove(corner_vert.buffer(), corner_vert_src, corner_vert.size_in_bytes())
 
+    vertex_count = len(m.vertices)
+
+    # Adjacency CSR: vertex -> neighbor vertices (from mesh edges)
+    from collections import defaultdict
+    neighbors = defaultdict(set)
+    for edge in m.edges:
+        v0, v1 = edge.vertices
+        neighbors[v0].add(v1)
+        neighbors[v1].add(v0)
+
+    adjacency_offsets_list = [0]
+    adjacency_indices_list = []
+    for v in range(vertex_count):
+        adj = sorted(neighbors.get(v, []))
+        adjacency_indices_list.extend(adj)
+        adjacency_offsets_list.append(len(adjacency_indices_list))
+
+    # Pack adjacency into single buffer: [offsets (vertex_count+1) | indices (2E)]
+    adj_total = len(adjacency_offsets_list) + max(len(adjacency_indices_list), 1)
+    adjacency_data_buf = get_load_buffer('adjacency_data', ctypes.c_int, adj_total)
+    adj_ptr = ctypes.cast(adjacency_data_buf.buffer(), ctypes.POINTER(ctypes.c_int))
+    for i, val in enumerate(adjacency_offsets_list):
+        adj_ptr[i] = val
+    base = len(adjacency_offsets_list)
+    for i, val in enumerate(adjacency_indices_list):
+        adj_ptr[base + i] = val
+
+    # Vertex-to-corner CSR: vertex -> loop/corner indices (inverse of corner_vert)
+    vert_corners = defaultdict(list)
+    cv_ptr = ctypes.cast(corner_vert.buffer(), ctypes.POINTER(ctypes.c_int))
+    for loop_idx in range(loop_count):
+        vert_corners[cv_ptr[loop_idx]].append(loop_idx)
+
+    vert_corner_offsets_list = [0]
+    vert_corner_indices_list = []
+    for v in range(vertex_count):
+        corners = sorted(vert_corners.get(v, []))
+        vert_corner_indices_list.extend(corners)
+        vert_corner_offsets_list.append(len(vert_corner_indices_list))
+
+    # Pack vert-corner into single buffer: [offsets (vertex_count+1) | indices (L)]
+    vc_total = len(vert_corner_offsets_list) + max(len(vert_corner_indices_list), 1)
+    vert_corner_data_buf = get_load_buffer('vert_corner_data', ctypes.c_int, vc_total)
+    vc_ptr = ctypes.cast(vert_corner_data_buf.buffer(), ctypes.POINTER(ctypes.c_int))
+    for i, val in enumerate(vert_corner_offsets_list):
+        vc_ptr[i] = val
+    base = len(vert_corner_offsets_list)
+    for i, val in enumerate(vert_corner_indices_list):
+        vc_ptr[base + i] = val
+
     # Normals: loop-indexed corner normals padded to vec4 (4 floats, w=0).
     # This buffer serves as the Normal VBO (read by the vertex shader with stride=16 to
     # skip the w padding) and as the writable Normal SSBO (binding 11).  The compute
@@ -133,8 +183,6 @@ def load_mesh(object, name):
                 color_buffer = get_load_buffer('colors'+str(i), type, loop_count*4)
                 ctypes.memmove(color_buffer.buffer(), color, color_buffer.size_in_bytes())
                 colors_list[i] = color_buffer
-
-    vertex_count = len(m.vertices)
 
     ssbo_colors_list = [None]*8
     if object.type == 'MESH':
@@ -226,6 +274,8 @@ def load_mesh(object, name):
         'rest_positions': rest_positions,
         'rest_normals': rest_normals,
         'corner_vert': corner_vert,
+        'adjacency_data': adjacency_data_buf,
+        'vert_corner_data': vert_corner_data_buf,
     }
 
     from . import MaltPipeline

@@ -193,13 +193,35 @@ class MaltTree(bpy.types.NodeTree):
             return os.path.join(self.get_generated_source_dir(),'{}-{}{}'.format(file_prefix, self.name, pipeline_graph.file_extension))
         return None
     
+    def _is_barrier_node(self, node):
+        """Return True if *node* has barrier=true in its function metadata."""
+        if not hasattr(node, 'function_type') or not node.function_type:
+            return False
+        graph = self.get_pipeline_graph()
+        if graph is None:
+            return False
+        function = graph.functions.get(node.function_type)
+        if function is None:
+            lib = self.get_full_library()
+            function = lib['functions'].get(node.function_type)
+        if function is None:
+            return False
+        return function['meta'].get('barrier', False)
+
+    def get_segment_source_path(self, segment_index):
+        """Return the file path for a specific segment shader."""
+        base = self.get_generated_source_path()
+        if base is None:
+            return None
+        return base.replace('.compute.glsl', f'_seg{segment_index}.compute.glsl')
+
     def get_generated_source(self, force_update=False):
         if force_update == False and self.get('source'):
             return self['source']
 
         output_nodes = []
         linked_nodes = []
-        
+
         pipeline_graph = self.get_pipeline_graph()
         if pipeline_graph:
             for node in self.nodes:
@@ -207,7 +229,7 @@ class MaltTree(bpy.types.NodeTree):
                 if node.bl_idname == 'MaltIONode' and node.is_output:
                     output_nodes.append(node)
                     linked_nodes.append(node)
-        
+
         def add_node_inputs(node, list, io_type):
             for input in node.inputs:
                 if input.get_linked():
@@ -220,29 +242,241 @@ class MaltTree(bpy.types.NodeTree):
                         list.append(new_node)
                     if new_node not in linked_nodes:
                         linked_nodes.append(new_node)
-        
+
         transpiler = self.get_transpiler()
-        def get_source(output):
+
+        # Collect parameter keys from ALL linked nodes (used by both paths).
+        def collect_linked_param_keys():
+            keys = set()
+            for node in linked_nodes:
+                if hasattr(node, 'get_input_parameter_name'):
+                    for input_name in node.inputs.keys():
+                        if '@' in input_name or not node.inputs[input_name].active:
+                            continue
+                        keys.add(node.get_input_parameter_name(input_name))
+            return keys
+
+        # Build the topo-sorted node list for each output.
+        # For compute graphs there is typically one output node.
+        all_topo_nodes = {}  # io_type -> [nodes in topo order]
+        for output in output_nodes:
             nodes = []
             add_node_inputs(output, nodes, output.io_type)
-            code = ''
+            all_topo_nodes[output.io_type] = (nodes, output)
+
+        # Check for barrier nodes in any output's topo list.
+        has_barriers = False
+        for io_type, (nodes, output) in all_topo_nodes.items():
             for node in nodes:
+                if self._is_barrier_node(node):
+                    has_barriers = True
+                    break
+            if has_barriers:
+                break
+
+        if not has_barriers:
+            # ── Single-segment path (unchanged legacy behavior) ──
+            def get_source(output):
+                nodes, _ = all_topo_nodes.get(output.io_type, ([], None))
+                code = ''
+                for node in nodes:
+                    if hasattr(node, 'get_source_code'):
+                        code += node.get_source_code(transpiler) + '\n'
+                code += output.get_source_code(transpiler)
+                return code
+
+            shader = {}
+            for output in output_nodes:
+                shader[output.io_type] = get_source(output)
+            shader['GLOBAL'] = ''
+            library_path = self.get_library_path()
+            if library_path:
+                shader['GLOBAL'] += '#include "{}"\n'.format(library_path)
+            for node in linked_nodes:
+                if hasattr(node, 'get_source_global_parameters'):
+                    shader['GLOBAL'] += node.get_source_global_parameters(transpiler)
+
+            self['linked_param_keys'] = list(collect_linked_param_keys())
+            self['source'] = pipeline_graph.generate_source(shader)
+            # Clear multi-segment data (IDProperties cannot store None)
+            for key in ('segment_sources', 'dispatch_plan'):
+                if key in self:
+                    del self[key]
+            return self['source']
+
+        # ── Multi-segment path: partition at barrier nodes ──
+        # We handle one output (COMPUTE) for now.
+        io_type = output_nodes[0].io_type
+        nodes, output_node = all_topo_nodes[io_type]
+
+        # Partition: split the topo-sorted node list at barriers.
+        # Each barrier produces a smooth step between the segment
+        # before it and the segment after it.
+        segments = [[]]       # list of node lists
+        barriers = []         # barrier nodes, in order
+        for node in nodes:
+            if self._is_barrier_node(node):
+                # Include the barrier in the current segment so its
+                # inout variable is declared (the function is a no-op).
+                segments[-1].append(node)
+                barriers.append(node)
+                segments.append([])  # start a new segment
+            else:
+                segments[-1].append(node)
+
+        # The output node goes in the final segment.
+        # (It is not in `nodes` — it's handled separately by get_source.)
+
+        # Build a set mapping each node to the segment index it *primarily*
+        # belongs to (for cross-segment reference detection).
+        node_segment = {}
+        for seg_idx, seg_nodes in enumerate(segments):
+            for n in seg_nodes:
+                node_segment[n] = seg_idx
+
+        # Cross-segment reference duplication: for each segment after the
+        # first, if a node's input comes from an earlier segment, duplicate
+        # that node (and its transitive deps) into this segment.
+        # Barrier nodes are excluded: their inout variables are handled by
+        # the alias declarations generated below (lines 374+), and their
+        # upstream deps don't need re-evaluation because the smooth kernel
+        # has already written the result to deformed_positions.
+        barrier_set = set(barriers)
+        def get_cross_segment_deps(node, seg_idx, collected):
+            """Recursively collect nodes from earlier segments that *node* depends on."""
+            for inp in node.inputs:
+                linked = inp.get_linked()
+                if linked is None:
+                    continue
+                dep_node = linked.node
+                if dep_node in collected or dep_node in barrier_set:
+                    continue
+                dep_seg = node_segment.get(dep_node)
+                if dep_seg is not None and dep_seg < seg_idx:
+                    get_cross_segment_deps(dep_node, seg_idx, collected)
+                    collected.append(dep_node)
+
+        for seg_idx in range(1, len(segments)):
+            cross_deps = []
+            for node in segments[seg_idx]:
+                get_cross_segment_deps(node, seg_idx, cross_deps)
+            if cross_deps:
+                # Prepend cross-segment deps (in topo order, which the
+                # recursive collection already provides).
+                segments[seg_idx] = cross_deps + segments[seg_idx]
+
+        # Generate source for each segment.
+        library_path = self.get_library_path()
+        segment_sources = []
+        for seg_idx, seg_nodes in enumerate(segments):
+            code = ''
+
+            # For segments after the first, any reference to a barrier
+            # node's inout variable from an earlier segment would be
+            # dangling.  Declare local aliases that map the barrier's
+            # variable name to the COMPUTE_SHADER function parameter
+            # (which main() initialises from deformed_positions).
+            if seg_idx > 0:
+                for barrier in barriers[:seg_idx]:
+                    barrier_src = barrier.get_source_name()
+                    if hasattr(barrier, 'get_function'):
+                        bfunc = barrier.get_function()
+                        if bfunc:
+                            for param in bfunc['parameters']:
+                                if param['io'] == 'inout' and param['name'] in ('position', 'normal'):
+                                    var_ref = transpiler.parameter_reference(
+                                        barrier_src, param['name'], 'inout')
+                                    code += transpiler.declaration(
+                                        param['type'], 0, var_ref, param['name'])
+
+            for node in seg_nodes:
                 if hasattr(node, 'get_source_code'):
                     code += node.get_source_code(transpiler) + '\n'
-            code += output.get_source_code(transpiler)
-            return code
 
-        shader ={}
-        for output in output_nodes:
-            shader[output.io_type] = get_source(output)
-        shader['GLOBAL'] = ''
-        library_path = self.get_library_path()
-        if library_path:
-            shader['GLOBAL'] += '#include "{}"\n'.format(library_path)
-        for node in linked_nodes:
-            if hasattr(node, 'get_source_global_parameters'):
-                shader['GLOBAL'] += node.get_source_global_parameters(transpiler)
-        self['source'] = pipeline_graph.generate_source(shader)
+            is_last = (seg_idx == len(segments) - 1)
+            if is_last:
+                # Final segment includes the Output node's assignments.
+                code += output_node.get_source_code(transpiler)
+            else:
+                # Intermediate segment: generate synthetic assignment of
+                # the barrier's inout position/normal back to the function
+                # parameters so main() writes them to deformed_positions.
+                barrier = barriers[seg_idx]
+                barrier_source_name = barrier.get_source_name()
+                if hasattr(barrier, 'get_function'):
+                    func = barrier.get_function()
+                    if func:
+                        for param in func['parameters']:
+                            if param['io'] == 'inout' and param['name'] in ('position', 'normal'):
+                                var_ref = transpiler.parameter_reference(
+                                    barrier_source_name, param['name'], 'inout')
+                                code += transpiler.asignment(param['name'], var_ref)
+
+            # Per-segment global declarations.
+            seg_global = ''
+            if library_path:
+                seg_global += '#include "{}"\n'.format(library_path)
+            # Collect globals from all nodes in this segment (including
+            # cross-segment duplicates and the output node if last segment).
+            seg_all_nodes = list(seg_nodes)
+            if is_last:
+                seg_all_nodes.append(output_node)
+            for node in seg_all_nodes:
+                if hasattr(node, 'get_source_global_parameters'):
+                    seg_global += node.get_source_global_parameters(transpiler)
+
+            seg_shader = {io_type: code, 'GLOBAL': seg_global}
+            segment_sources.append(pipeline_graph.generate_source(seg_shader))
+
+        # Build the dispatch plan.
+        dispatch_plan = []
+        for seg_idx in range(len(segments)):
+            # Detect per-segment iteration parameters.
+            iteration_param = None
+            for node in segments[seg_idx]:
+                if not hasattr(node, 'function_type') or not node.function_type:
+                    continue
+                func = None
+                if node.function_type in pipeline_graph.functions:
+                    func = pipeline_graph.functions[node.function_type]
+                if func is None:
+                    continue
+                for param in func['parameters']:
+                    if 'compute_iterations' in param['name'].lower():
+                        iteration_param = 'compute_iterations'
+                        break
+                if iteration_param:
+                    break
+
+            dispatch_plan.append({
+                'type': 'segment',
+                'index': seg_idx,
+                'path': self.get_segment_source_path(seg_idx),
+                'iteration_param': iteration_param or '',
+            })
+
+            # After each non-last segment, insert the smooth step for
+            # the barrier that separates it from the next segment.
+            if seg_idx < len(barriers):
+                barrier = barriers[seg_idx]
+                barrier_source_name = barrier.get_source_name()
+                # Build the parameter keys for this barrier's smooth params.
+                iter_key = transpiler.global_reference(
+                    barrier_source_name, 'smooth_iterations')
+                strength_key = transpiler.global_reference(
+                    barrier_source_name, 'smooth_strength')
+                dispatch_plan.append({
+                    'type': 'smooth',
+                    'node_prefix': barrier_source_name,
+                    'iterations_key': iter_key,
+                    'strength_key': strength_key,
+                })
+
+        self['linked_param_keys'] = list(collect_linked_param_keys())
+        self['segment_sources'] = segment_sources
+        self['dispatch_plan'] = dispatch_plan
+        # Primary source is the first segment (for backward compat / caching).
+        self['source'] = segment_sources[0] if segment_sources else ''
         return self['source']
     
     def reload_nodes(self):
@@ -312,11 +546,49 @@ class MaltTree(bpy.types.NodeTree):
             source_path = self.get_generated_source_path()
             import pathlib
             pathlib.Path(source_dir).mkdir(parents=True, exist_ok=True)
-            with open(source_path,'w') as f:
-                f.write(source)
+
+            segment_sources = self.get('segment_sources')
+            dispatch_plan = self.get('dispatch_plan')
+            is_compute = source_path.endswith('.compute.glsl')
+            if segment_sources and dispatch_plan and len(segment_sources) > 1:
+                # Multi-segment: write one file per segment.
+                import os, glob as glob_mod
+                written_paths = set()
+                for step in dispatch_plan:
+                    if step['type'] == 'segment':
+                        seg_path = step['path']
+                        with open(seg_path, 'w') as f:
+                            f.write(segment_sources[step['index']])
+                        written_paths.add(os.path.normpath(seg_path))
+                # Clean up stale segment files from a previous compilation
+                # that had more segments than the current one.
+                if is_compute:
+                    base = source_path.replace('.compute.glsl', '_seg*.compute.glsl')
+                    for existing in glob_mod.glob(base):
+                        if os.path.normpath(existing) not in written_paths:
+                            os.remove(existing)
+                # Clean up the single-file path if it exists from a
+                # previous non-barrier compilation.
+                if os.path.exists(source_path):
+                    os.remove(source_path)
+            else:
+                # Single segment: existing behavior.
+                with open(source_path, 'w') as f:
+                    f.write(source)
+                # Clean up stale segment files from a previous
+                # multi-segment compilation (only relevant for compute shaders).
+                if is_compute:
+                    import os, glob as glob_mod
+                    base = source_path.replace('.compute.glsl', '_seg*.compute.glsl')
+                    for stale in glob_mod.glob(base):
+                        os.remove(stale)
+
             if force_track_shader_changes:
                 from BlenderMalt import MaltMaterial
-                MaltMaterial.track_shader_changes()
+                if is_compute:
+                    MaltMaterial.track_compute_shader_changes()
+                else:
+                    MaltMaterial.track_shader_changes()
         except:
             import traceback
             traceback.print_exc()
@@ -341,6 +613,7 @@ def setup_node_trees():
             tree.update_ext(force_track_shader_changes=False, force_update=True)
     from BlenderMalt import MaltMaterial
     MaltMaterial.track_shader_changes()
+    MaltMaterial.track_compute_shader_changes()
 
 #SKIP_SAVE doesn't work
 def manual_skip_save():

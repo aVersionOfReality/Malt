@@ -8,6 +8,8 @@
 //   10   = corner_vert           — loop-indexed int[], maps each loop to its unique vertex index
 //   11   = normals               — loop-indexed vec4[], read-write; written back to Normal VBO
 //   12   = rest_normals          — loop-indexed vec4[], read-only original normals (never overwritten)
+//   13   = adjacency_data        — int[], packed CSR [offsets (V+1) | indices (2E)]
+//   14   = vert_corner_data      — int[], packed CSR [offsets (V+1) | indices (L)]
 //
 // Every .compute.glsl node tree must implement:
 //   void COMPUTE_SHADER(inout vec3 position, inout vec3 normal)
@@ -81,9 +83,49 @@ layout(std430, binding = 12) readonly buffer REST_NORMALS {
     vec4 rest_normals[];
 };
 
+// Packed CSR buffers — each contains [offsets (VERTEX_COUNT+1 ints) | indices (N ints)].
+// Use the helper functions below instead of indexing these directly.
+//
+// Adjacency CSR: which vertices are connected by edges.
+//   adjacency_data[0 .. VERTEX_COUNT] = per-vertex start offsets into the indices section
+//   adjacency_data[VERTEX_COUNT+1 .. ] = flattened neighbor vertex indices
+layout(std430, binding = 13) readonly buffer ADJACENCY_DATA {
+    int adjacency_data[];
+};
+
+// Vertex-to-corner CSR: which loop/corner indices belong to each vertex.
+//   vert_corner_data[0 .. VERTEX_COUNT] = per-vertex start offsets into the indices section
+//   vert_corner_data[VERTEX_COUNT+1 .. ] = flattened corner/loop indices
+layout(std430, binding = 14) readonly buffer VERT_CORNER_DATA {
+    int vert_corner_data[];
+};
+
 uniform uint LOOP_COUNT = 0u;
+uniform uint VERTEX_COUNT = 0u;
 uniform uint COMPUTE_ITERATIONS = 1u;  // Total iterations — read by Python dispatch loop
 uniform uint ITERATION = 0u;           // Current iteration — set by Python before each dispatch
+uniform uint SEGMENT_INDEX = 0u;       // Dispatch plan segment (0 = first; >0 reads deformed)
+
+// ── Adjacency helper functions ──
+// Use these instead of indexing adjacency_data/vert_corner_data directly.
+
+// Number of edge-connected neighbor vertices for vertex v.
+int adjacency_count(int v) {
+    return adjacency_data[v + 1] - adjacency_data[v];
+}
+// The i-th neighbor vertex index of vertex v (i in 0..adjacency_count(v)-1).
+int adjacency_neighbor(int v, int i) {
+    return adjacency_data[int(VERTEX_COUNT) + 1 + adjacency_data[v] + i];
+}
+
+// Number of loop/corner indices belonging to vertex v.
+int vert_corner_count(int v) {
+    return vert_corner_data[v + 1] - vert_corner_data[v];
+}
+// The i-th corner/loop index of vertex v (i in 0..vert_corner_count(v)-1).
+int vert_corner_index(int v, int i) {
+    return vert_corner_data[int(VERTEX_COUNT) + 1 + vert_corner_data[v] + i];
+}
 
 // When the user's compute graph provides an implementation, CUSTOM_COMPUTE_SHADER is
 // defined by generate_source() and the forward declaration below is used (the actual
@@ -101,12 +143,12 @@ void main() {
     if (idx >= LOOP_COUNT) return;
     vec3 position;
     vec3 normal;
-    if (ITERATION == 0u) {
-        // First iteration: start from the immutable rest-pose data.
+    if (SEGMENT_INDEX == 0u && ITERATION == 0u) {
+        // First segment, first iteration: start from the immutable rest-pose data.
         position = rest_positions[idx].xyz;
         normal   = rest_normals[idx].xyz;
     } else {
-        // Subsequent iterations: build on the previous dispatch's output.
+        // Later segments or later iterations: build on previous output.
         position = deformed_positions[idx].xyz;
         normal   = normals[idx].xyz;
     }

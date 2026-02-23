@@ -79,7 +79,7 @@ class MainPass(PipelineNode):
                     shader_resources['CUSTOM_IO'+glsl_name] = TextureShaderResource(glsl_name, inputs[io['name']])
                     
         self.fbo.clear([(0,0,0,0)] * len(self.fbo.targets))
-        self.pipeline.draw_scene_pass(self.fbo, scene.batches, 'MAIN_PASS', self.pipeline.default_shader['MAIN_PASS'], 
+        self.pipeline.draw_scene_pass(self.fbo, scene.batches, 'MAIN_PASS', self.pipeline.default_shader['MAIN_PASS'],
             shader_resources, GL_EQUAL)
 
         outputs.update(self.custom_targets)

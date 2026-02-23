@@ -122,8 +122,12 @@ class MeshCustomLoad(Mesh):
         self.vertex_count = 0
         self.loop_count = 0
         self.rest_position_ssbo = None
+        self.rest_normals_ssbo = None
         self.deformed_position_buffer = None
         self.corner_vert_ssbo = None
+        self.adjacency_data_ssbo = None
+        self.vert_corner_data_ssbo = None
+        self.smooth_scratch_ssbo = None
 
         self.index_count = 0
 
