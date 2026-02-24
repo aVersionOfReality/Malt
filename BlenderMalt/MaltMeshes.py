@@ -295,18 +295,6 @@ def reset_meshes():
     global MESHES
     MESHES = {}
 
-def draw_compute_shader(self, context):
-    if context.scene.render.engine != 'MALT':
-        return
-    if context.object is None or context.object.type != 'MESH':
-        return
-    mesh = context.object.data
-    self.layout.use_property_split = True
-    self.layout.label(text='Malt Compute')
-    self.layout.prop_search(mesh, 'malt_compute_nodes', bpy.data, 'node_groups',
-                            text='Compute Node Tree')
-
-
 def draw_vertex_color_overrides(self, context):
     if context.scene.render.engine != 'MALT':
         return
@@ -332,7 +320,6 @@ def register():
         name='Compute Node Tree',
         description='Malt Compute node tree to run on this mesh each frame',
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
-    bpy.types.DATA_PT_vertex_colors.append(draw_compute_shader)
 
     bpy.types.Mesh.malt_vertex_color_override_0 = bpy.props.StringProperty(name='0',
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
@@ -346,7 +333,6 @@ def register():
 
 
 def unregister():
-    bpy.types.DATA_PT_vertex_colors.remove(draw_compute_shader)
     del bpy.types.Mesh.malt_compute_nodes
 
     bpy.types.DATA_PT_vertex_colors.remove(draw_vertex_color_overrides)

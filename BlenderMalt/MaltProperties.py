@@ -884,6 +884,14 @@ class MALT_PT_Mesh(MALT_PT_Base):
         if context.object and context.object.type in ('SURFACE', 'FONT'):
             return context.object.data
 
+    def draw(self, context):
+        if context.mesh and hasattr(context.mesh, 'malt_compute_nodes'):
+            self.layout.prop_search(context.mesh, 'malt_compute_nodes',
+                                    bpy.data, 'node_groups',
+                                    text='Compute Node Tree')
+            self.layout.separator()
+        super().draw(context)
+
 class MALT_PT_Light(MALT_PT_Base):
     bl_context = "data"
     @classmethod
