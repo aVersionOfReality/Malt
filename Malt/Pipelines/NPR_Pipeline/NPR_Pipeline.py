@@ -315,6 +315,12 @@ class NPR_Pipeline(Pipeline):
 
         self.is_new_frame = is_new_frame
 
+        # Reset per-frame compute dispatch flag so run_compute_pass() will
+        # execute on the first call this frame (whether from here or from a
+        # ComputePass render node).
+        if is_new_frame:
+            self._compute_dispatched_this_frame = False
+
         sample_offset = self.get_sample(scene.world_parameters['Samples.Width'])
 
         opaque_batches, transparent_batches = self.get_scene_batches(scene)
@@ -330,8 +336,8 @@ class NPR_Pipeline(Pipeline):
         }
 
         # Dispatch compute shaders before the render graph draws geometry.
-        # This updates deformed_position_buffer for meshes that have a compute
-        # shader assigned, so the vertex shader reads the deformed positions.
+        # run_compute_pass() is frame-aware and will no-op if already
+        # dispatched this frame (e.g. by a ComputePass render node later).
         self.run_compute_pass(scene.batches)
 
         graph = scene.world_parameters['Render']

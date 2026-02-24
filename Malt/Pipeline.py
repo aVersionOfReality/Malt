@@ -587,7 +587,10 @@ class Pipeline():
     def run_compute_pass(self, scene_batches):
         """Dispatch compute shaders for all meshes that have one assigned.
 
-        Call this before draw_scene_pass().
+        Call this before draw_scene_pass().  Safe to call multiple times per
+        frame (e.g. from both do_render and a ComputePass render node) — only
+        the first call per frame actually dispatches; subsequent calls are
+        no-ops.
 
         Supports two modes:
         1. Single-shader (legacy): one compute shader dispatched with iterations,
@@ -600,6 +603,12 @@ class Pipeline():
         buffer writes are visible to the subsequent vertex shader reads via
         in_position.
         """
+        # Compute results are deterministic and independent of sample jitter,
+        # so only dispatch once per frame.  The flag is reset by do_render()
+        # when is_new_frame is True.
+        if getattr(self, '_compute_dispatched_this_frame', False):
+            return
+
         any_dispatched = False
 
         for material, meshes in scene_batches.items():
@@ -741,6 +750,7 @@ class Pipeline():
 
         if any_dispatched:
             glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT)
+            self._compute_dispatched_this_frame = True
 
     def draw_scene_pass(self, render_target, scene_batches, pass_name=None, default_shader=None, shader_resources={}, depth_test_function=GL_LEQUAL):
         glDisable(GL_BLEND)
