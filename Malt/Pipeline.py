@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, cotangent_weights=None, edge_metadata=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -235,6 +235,16 @@ class Pipeline():
             vert_corner_data_ssbo = SSBO()
             vert_corner_data_ssbo.load_raw(vert_corner_data.buffer(), vert_corner_data.size_in_bytes())
 
+        cotangent_weights_ssbo = None
+        if cotangent_weights is not None:
+            cotangent_weights_ssbo = SSBO()
+            cotangent_weights_ssbo.load_raw(cotangent_weights.buffer(), cotangent_weights.size_in_bytes())
+
+        edge_metadata_ssbo = None
+        if edge_metadata is not None:
+            edge_metadata_ssbo = SSBO()
+            edge_metadata_ssbo.load_raw(edge_metadata.buffer(), edge_metadata.size_in_bytes())
+
         # Scratch buffer for Laplacian smooth ping-pong (same size as deformed_positions).
         smooth_scratch_ssbo = None
         if loop_count > 0:
@@ -244,6 +254,16 @@ class Pipeline():
             glBufferData(GL_SHADER_STORAGE_BUFFER, scratch_size, None, GL_DYNAMIC_DRAW)
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             smooth_scratch_ssbo.size = scratch_size
+
+        # Per-corner weight parameters for smooth kernel (written by barrier node).
+        smooth_weights_ssbo = None
+        if loop_count > 0:
+            smooth_weights_ssbo = SSBO()
+            weights_size = loop_count * 16  # vec4 per loop
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, smooth_weights_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, weights_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            smooth_weights_ssbo.size = weights_size
 
         results = []
 
@@ -275,7 +295,10 @@ class Pipeline():
             result.corner_vert_ssbo = corner_vert_ssbo
             result.adjacency_data_ssbo = adjacency_data_ssbo
             result.vert_corner_data_ssbo = vert_corner_data_ssbo
+            result.cotangent_weights_ssbo = cotangent_weights_ssbo
+            result.edge_metadata_ssbo = edge_metadata_ssbo
             result.smooth_scratch_ssbo = smooth_scratch_ssbo
+            result.smooth_weights_ssbo = smooth_weights_ssbo
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE, stride=0):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -454,26 +477,47 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, m.adjacency_data_ssbo.buffer[0])
         if m.vert_corner_data_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 14, m.vert_corner_data_ssbo.buffer[0])
+        if m.cotangent_weights_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 16, m.cotangent_weights_ssbo.buffer[0])
+        if m.edge_metadata_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 17, m.edge_metadata_ssbo.buffer[0])
+        if m.smooth_weights_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 18, m.smooth_weights_ssbo.buffer[0])
 
     def _run_smooth_step(self, m, step, compute_params, workgroups):
         """Run a single Laplacian smooth dispatch step (ping-pong kernel)."""
         # Read smooth params by exact key from the dispatch plan.
         si = 0
-        ss = 0.5
         iter_key = step.get('iterations_key', '')
-        str_key = step.get('strength_key', '')
         if iter_key in compute_params:
             val = compute_params[iter_key]
             if hasattr(val, '__len__'):
                 val = val[0]
             if isinstance(val, (int, float)) and val >= 0:
                 si = int(val)
-        if str_key in compute_params:
-            val = compute_params[str_key]
+
+        # Read cotangent factor (0 = uniform weights, 1 = full cotangent weights).
+        cf = 1.0
+        cf_key = step.get('cotangent_factor_key', '')
+        if cf_key in compute_params:
+            val = compute_params[cf_key]
             if hasattr(val, '__len__'):
                 val = val[0]
             if isinstance(val, (int, float)):
-                ss = float(val)
+                cf = float(val)
+
+        # Read quad mode (0 = skip diagonals, 1 = include uniform, 2 = virtual triangles).
+        qm = 0
+        qm_key = step.get('quad_mode_key', '')
+        if qm_key in compute_params:
+            val = compute_params[qm_key]
+            if hasattr(val, '__len__'):
+                val = val[0]
+            if isinstance(val, (int, float)):
+                qm = int(val)
+
+        # Group-based smoothing: enabled when fan group data exists in ssbo_data_2.
+        groups_enabled = (len(m.ssbo_list) > 2 and m.ssbo_list[2] is not None)
 
         if si <= 0 or m.smooth_scratch_ssbo is None:
             return False
@@ -487,12 +531,39 @@ class Pipeline():
             smooth_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
         if 'VERTEX_COUNT' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
-        if 'SMOOTH_STRENGTH' in smooth_kernel.uniforms:
-            smooth_kernel.uniforms['SMOOTH_STRENGTH'].set_value(ss)
+        if 'COTANGENT_FACTOR' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['COTANGENT_FACTOR'].set_value(cf)
 
-        buf_a = m.deformed_position_buffer[0]
+        # Group-based smoothing: edge_metadata already bound at 17 by _bind_compute_ssbos.
+        # ssbo_data_2 already bound at 2 (kernel reads fan group from .x for scatter).
+        if 'GROUPS_ENABLED' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['GROUPS_ENABLED'].set_value(1 if groups_enabled else 0)
+
+        # Quad diagonal handling.
+        if 'QUAD_MODE' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['QUAD_MODE'].set_value(qm)
+
+        # LAST_ITERATION: 0 during iterations, 1 on the final iteration to
+        # trigger per-corner mix with rest normals from smooth_weights[].w.
+        if 'LAST_ITERATION' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['LAST_ITERATION'].set_value(0)
+
+        # Select buffer based on smooth target (position or normal).
+        smooth_target = step.get('smooth_target', 'position')
+        if smooth_target == 'normal' and m.normal is not None:
+            buf_a = m.normal[0]
+            buf_a_binding = 11
+        else:
+            buf_a = m.deformed_position_buffer[0]
+            buf_a_binding = 9
+
         buf_b = m.smooth_scratch_ssbo.buffer[0]
         for s_iter in range(si):
+            # On the last iteration, signal the kernel to apply per-corner mix.
+            if s_iter == si - 1:
+                if 'LAST_ITERATION' in smooth_kernel.uniforms:
+                    smooth_kernel.uniforms['LAST_ITERATION'].set_value(1)
+
             if s_iter % 2 == 0:
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_b)
@@ -507,7 +578,7 @@ class Pipeline():
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         # Ensure the last smooth dispatch is visible before any subsequent
-        # segment shader reads from deformed_positions.
+        # segment shader reads.
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         if si % 2 == 1:
@@ -519,7 +590,11 @@ class Pipeline():
             glBindBuffer(GL_COPY_READ_BUFFER, 0)
             glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
+        # Restore bindings: buf_a back to its home slot, and ensure
+        # binding 9 points to deformed_positions for subsequent shaders.
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, buf_a_binding, buf_a)
+        if buf_a_binding != 9:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
         return True
 
     def _dispatch_shader_segment(self, m, shader, seg_index, iterations, compute_params, workgroups):

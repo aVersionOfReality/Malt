@@ -193,20 +193,24 @@ class MaltTree(bpy.types.NodeTree):
             return os.path.join(self.get_generated_source_dir(),'{}-{}{}'.format(file_prefix, self.name, pipeline_graph.file_extension))
         return None
     
-    def _is_barrier_node(self, node):
-        """Return True if *node* has barrier=true in its function metadata."""
+    def _get_barrier_meta(self, node):
+        """Return the function metadata dict for a barrier node, or None."""
         if not hasattr(node, 'function_type') or not node.function_type:
-            return False
+            return None
         graph = self.get_pipeline_graph()
         if graph is None:
-            return False
+            return None
         function = graph.functions.get(node.function_type)
         if function is None:
             lib = self.get_full_library()
             function = lib['functions'].get(node.function_type)
         if function is None:
-            return False
-        return function['meta'].get('barrier', False)
+            return None
+        return function['meta'] if function['meta'].get('barrier', False) else None
+
+    def _is_barrier_node(self, node):
+        """Return True if *node* has barrier=true in its function metadata."""
+        return self._get_barrier_meta(node) is not None
 
     def get_segment_source_path(self, segment_index):
         """Return the file path for a specific segment shader."""
@@ -377,6 +381,12 @@ class MaltTree(bpy.types.NodeTree):
             # variable name to the COMPUTE_SHADER function parameter
             # (which main() initialises from deformed_positions).
             if seg_idx > 0:
+                # Track which variables were smoothed by barrier kernels so we
+                # can reset them to rest-buffer values after capturing the
+                # smoothed result in the alias.  This lets nodes in this
+                # segment (e.g. Compute Input → normal) read the *original*
+                # values while the barrier alias holds the smoothed values.
+                smoothed_vars = set()
                 for barrier in barriers[:seg_idx]:
                     barrier_src = barrier.get_source_name()
                     if hasattr(barrier, 'get_function'):
@@ -388,6 +398,32 @@ class MaltTree(bpy.types.NodeTree):
                                         barrier_src, param['name'], 'inout')
                                     code += transpiler.declaration(
                                         param['type'], 0, var_ref, param['name'])
+                    # Determine which variable this barrier's kernel smoothed.
+                    barrier_meta = self._get_barrier_meta(barrier)
+                    if barrier_meta:
+                        target = barrier_meta.get('smooth_target', 'position')
+                        smoothed_vars.add(target)
+
+                # Reset smoothed variables to rest-buffer values so that
+                # Compute Input references see the originals, not the
+                # post-smooth values.  The barrier aliases above already
+                # captured the smoothed result.
+                # Guard with ITERATION == 0 so that multi-iteration segments
+                # only reset on the first pass (later iterations should build
+                # on the previous iteration's output, not the rest pose).
+                rest_buffer_map = {
+                    'normal':   'rest_normals[gl_GlobalInvocationID.x].xyz',
+                    'position': 'rest_positions[gl_GlobalInvocationID.x].xyz',
+                }
+                resets = []
+                for var_name in sorted(smoothed_vars):
+                    if var_name in rest_buffer_map:
+                        resets.append(f'{var_name} = {rest_buffer_map[var_name]};')
+                if resets:
+                    code += 'if (ITERATION == 0u) {\n'
+                    for r in resets:
+                        code += f'    {r}\n'
+                    code += '}\n'
 
             for node in seg_nodes:
                 if hasattr(node, 'get_source_code'):
@@ -463,13 +499,20 @@ class MaltTree(bpy.types.NodeTree):
                 # Build the parameter keys for this barrier's smooth params.
                 iter_key = transpiler.global_reference(
                     barrier_source_name, 'smooth_iterations')
-                strength_key = transpiler.global_reference(
-                    barrier_source_name, 'smooth_strength')
+                cotangent_factor_key = transpiler.global_reference(
+                    barrier_source_name, 'cotangent_factor')
+                quad_mode_key = transpiler.global_reference(
+                    barrier_source_name, 'quad_mode')
+                # Read smooth_target from barrier metadata (default: position).
+                barrier_meta = self._get_barrier_meta(barrier)
+                smooth_target = barrier_meta.get('smooth_target', 'position') if barrier_meta else 'position'
                 dispatch_plan.append({
                     'type': 'smooth',
                     'node_prefix': barrier_source_name,
                     'iterations_key': iter_key,
-                    'strength_key': strength_key,
+                    'cotangent_factor_key': cotangent_factor_key,
+                    'quad_mode_key': quad_mode_key,
+                    'smooth_target': smooth_target,
                 })
 
         self['linked_param_keys'] = list(collect_linked_param_keys())

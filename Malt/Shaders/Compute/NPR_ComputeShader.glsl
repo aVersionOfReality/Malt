@@ -10,6 +10,11 @@
 //   12   = rest_normals          — loop-indexed vec4[], read-only original normals (never overwritten)
 //   13   = adjacency_data        — int[], packed CSR [offsets (V+1) | indices (2E)]
 //   14   = vert_corner_data      — int[], packed CSR [offsets (V+1) | indices (L)]
+//   15   = smooth_scratch        — vec4[], ping-pong target for Laplacian smooth kernel
+//   16   = cotangent_weights     — float[], per-edge cotangent weights (parallel to adjacency indices)
+//   17   = edge_metadata          — int[], per-adjacency-entry triplets [owning_fan, gather_corner, flags] (smooth kernel only; flags bit 0 = IS_DIAGONAL)
+//   18   = smooth_weights         — loop-indexed vec4[], per-corner weight params (written by barrier node, read by smooth kernel):
+//                                    .x = application_strength, .y = contribution_strength, .z = own_normal_strength, .w = mix_factor
 //
 // Every .compute.glsl node tree must implement:
 //   void COMPUTE_SHADER(inout vec3 position, inout vec3 normal)
@@ -81,6 +86,12 @@ layout(std430, binding = 11) buffer NORMALS {
 // normals[] on the previous frame.
 layout(std430, binding = 12) readonly buffer REST_NORMALS {
     vec4 rest_normals[];
+};
+
+// Per-corner smooth weight parameters (written by barrier node, read by smooth kernel).
+//   .x = application_strength, .y = contribution_strength, .z = own_normal_strength, .w = mix_factor
+layout(std430, binding = 18) buffer SMOOTH_WEIGHTS {
+    vec4 smooth_weights[];
 };
 
 // Packed CSR buffers — each contains [offsets (VERTEX_COUNT+1 ints) | indices (N ints)].

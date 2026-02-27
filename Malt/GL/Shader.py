@@ -603,7 +603,9 @@ def glsl_reflection(code, root_paths=[]):
 
     def patch_meta(dic):
         for e in dic.values():
-            path = e['file']
+            path = e.get('file')
+            if path is None:
+                continue
             if path in reflection['meta globals']:
                 for k, v in reflection['meta globals'][path].items():
                     if k not in e['meta'].keys():
@@ -644,7 +646,9 @@ def glsl_reflection(code, root_paths=[]):
 
     def handle_paths(dic):
         for e in dic.values():
-            path = e['file']
+            path = e.get('file')
+            if path is None:
+                continue
             if '.internal.' in path or '__internal__' in path:
                 if 'internal' not in e['meta'].keys():
                     e['meta']['internal'] = True
@@ -662,7 +666,7 @@ def glsl_reflection(code, root_paths=[]):
 
     functions = {}
     for key, function in reflection['functions'].items():
-        new_key = function['file'].replace('/',' - ').replace('.glsl',' - ') + function['name']
+        new_key = function.get('file', '').replace('/',' - ').replace('.glsl',' - ') + function['name']
         if function['name'].isupper() or function['name'].startswith('_'):
             new_key = function['name']
         if new_key not in functions.keys():

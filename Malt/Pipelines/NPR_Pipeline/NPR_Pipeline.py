@@ -65,7 +65,7 @@ void MAIN_PASS_PIXEL_SHADER()
 
 DEFAULTS_PATH = os.path.join(os.path.dirname(__file__), 'Defaults', 'defaults')
 
-_COMPUTE_SHADER_HEADER = '#include "Compute/NPR_ComputeShader.glsl"\n'
+_COMPUTE_SHADER_HEADER = '#include "Compute/NPR_ComputeShader.glsl"\n#include "Node Utils 2/conversion.glsl"\n'
 
 _DEFAULT_COMPUTE_SHADER_SRC = '''\
 // Default no-op compute shader.
