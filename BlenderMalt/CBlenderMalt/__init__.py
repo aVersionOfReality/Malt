@@ -31,6 +31,14 @@ mesh_tangents.argtypes = [
 ]
 mesh_tangents.restype = ctypes.c_bool
 
+pack_bone_data = CBlenderMalt['pack_bone_data']
+pack_bone_data.argtypes = [
+    ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float),
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float)
+]
+pack_bone_data.restype = None
+
 pad_vec3_to_vec4 = CBlenderMalt['pad_vec3_to_vec4']
 pad_vec3_to_vec4.argtypes = [
     ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int

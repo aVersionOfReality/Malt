@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, cotangent_weights=None, edge_metadata=None):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, cotangent_weights=None, edge_metadata=None, bone_indices=None, bone_weights=None, bone_count=0):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -265,6 +265,27 @@ class Pipeline():
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             smooth_weights_ssbo.size = weights_size
 
+        # GPU skinning SSBOs: per-vertex bone indices/weights (static) and
+        # per-bone matrices (pre-allocated empty, filled per-frame).
+        bone_indices_ssbo = None
+        if bone_indices is not None:
+            bone_indices_ssbo = SSBO()
+            bone_indices_ssbo.load_raw(bone_indices.buffer(), bone_indices.size_in_bytes())
+
+        bone_weights_ssbo = None
+        if bone_weights is not None:
+            bone_weights_ssbo = SSBO()
+            bone_weights_ssbo.load_raw(bone_weights.buffer(), bone_weights.size_in_bytes())
+
+        bone_matrices_ssbo = None
+        if bone_count > 0:
+            bone_matrices_ssbo = SSBO()
+            matrices_size = bone_count * 64  # mat4 = 16 floats = 64 bytes per bone
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, bone_matrices_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, matrices_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            bone_matrices_ssbo.size = matrices_size
+
         results = []
 
         for i, index in enumerate(indices):
@@ -299,6 +320,10 @@ class Pipeline():
             result.edge_metadata_ssbo = edge_metadata_ssbo
             result.smooth_scratch_ssbo = smooth_scratch_ssbo
             result.smooth_weights_ssbo = smooth_weights_ssbo
+            result.bone_indices_ssbo = bone_indices_ssbo
+            result.bone_weights_ssbo = bone_weights_ssbo
+            result.bone_matrices_ssbo = bone_matrices_ssbo
+            result.bone_count = bone_count
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE, stride=0):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -449,6 +474,24 @@ class Pipeline():
             Pipeline._smooth_kernel = ComputeShader(None)
         return Pipeline._smooth_kernel
 
+    _skin_kernel = None
+
+    def _get_skin_kernel(self):
+        """Lazy-compile the LBS skinning kernel (cached on the class)."""
+        if Pipeline._skin_kernel is not None:
+            return Pipeline._skin_kernel
+        kernel_path = path.join(SHADER_DIR, 'ComputeKernels', 'LBS_Skin_Kernel.glsl')
+        try:
+            with open(kernel_path) as f:
+                source = '#define COMPUTE_STAGE\n' + f.read()
+            Pipeline._skin_kernel = ComputeShader(source)
+            if Pipeline._skin_kernel.error:
+                LOG.error(f'SKIN KERNEL ERROR: {Pipeline._skin_kernel.error}')
+        except Exception as e:
+            LOG.error(f'Failed to load skin kernel: {e}')
+            Pipeline._skin_kernel = ComputeShader(None)
+        return Pipeline._skin_kernel
+
     def _bind_compute_ssbos(self, m, shader):
         """Bind mesh attribute and compute-specific SSBOs for a compute shader."""
         # Face-corner attribute SSBOs (bindings 0–7)
@@ -483,6 +526,12 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 17, m.edge_metadata_ssbo.buffer[0])
         if m.smooth_weights_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 18, m.smooth_weights_ssbo.buffer[0])
+        if getattr(m, 'bone_matrices_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, m.bone_matrices_ssbo.buffer[0])
+        if getattr(m, 'bone_indices_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 20, m.bone_indices_ssbo.buffer[0])
+        if getattr(m, 'bone_weights_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 21, m.bone_weights_ssbo.buffer[0])
 
     def _run_smooth_step(self, m, step, compute_params, workgroups):
         """Run a single Laplacian smooth dispatch step (ping-pong kernel)."""
@@ -597,6 +646,45 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
         return True
 
+    def _run_skin_step(self, m, step, compute_params, workgroups):
+        """Run the LBS skinning kernel (single dispatch)."""
+        bone_matrices_ssbo = getattr(m, 'bone_matrices_ssbo', None)
+        bone_indices_ssbo = getattr(m, 'bone_indices_ssbo', None)
+        bone_weights_ssbo = getattr(m, 'bone_weights_ssbo', None)
+
+        if bone_matrices_ssbo is None or bone_indices_ssbo is None or bone_weights_ssbo is None:
+            return False
+
+        skin_position = step.get('skin_position', True)
+        skin_normal = step.get('skin_normal', True)
+        if not skin_position and not skin_normal:
+            return True  # nothing to do
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        skin_kernel = self._get_skin_kernel()
+        if skin_kernel is None or skin_kernel.error:
+            return False
+
+        if 'LOOP_COUNT' in skin_kernel.uniforms:
+            skin_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+        if 'SKIN_POSITION' in skin_kernel.uniforms:
+            skin_kernel.uniforms['SKIN_POSITION'].set_value(skin_position)
+        if 'SKIN_NORMAL' in skin_kernel.uniforms:
+            skin_kernel.uniforms['SKIN_NORMAL'].set_value(skin_normal)
+
+        # Bind bone data SSBOs (rest/deformed/normals/corner_vert already bound
+        # by _bind_compute_ssbos from the preceding segment dispatch).
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, bone_matrices_ssbo.buffer[0])
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 20, bone_indices_ssbo.buffer[0])
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 21, bone_weights_ssbo.buffer[0])
+
+        skin_kernel.bind()
+        skin_kernel.dispatch(workgroups)
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        return True
+
     def _dispatch_shader_segment(self, m, shader, seg_index, iterations, compute_params, workgroups):
         """Dispatch a single compute shader segment with iteration support."""
         if 'LOOP_COUNT' in shader.uniforms:
@@ -658,6 +746,9 @@ class Pipeline():
 
             elif step['type'] == 'smooth':
                 self._run_smooth_step(m, step, compute_params, workgroups)
+
+            elif step['type'] == 'skin':
+                self._run_skin_step(m, step, compute_params, workgroups)
 
     def run_compute_pass(self, scene_batches):
         """Dispatch compute shaders for all meshes that have one assigned.

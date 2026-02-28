@@ -21,4 +21,7 @@ def load_mesh(pipeline, msg):
         vert_corner_data = data.get('vert_corner_data', None),
         cotangent_weights = data.get('cotangent_weights', None),
         edge_metadata = data.get('edge_metadata', None),
+        bone_indices = data.get('bone_indices', None),
+        bone_weights = data.get('bone_weights', None),
+        bone_count = data.get('bone_count', 0),
     )

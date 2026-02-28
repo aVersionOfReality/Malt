@@ -70,12 +70,14 @@ class ComputeShaderProxy():
     """
 
     def __init__(self, mesh_name, submesh_index, compute_path,
-                 shader_parameters=None, dispatch_plan=None):
+                 shader_parameters=None, dispatch_plan=None,
+                 bone_matrices=None):
         self.mesh_name = mesh_name
         self.submesh_index = submesh_index
         self.compute_path = compute_path
         self.shader_parameters = shader_parameters or {}
         self.dispatch_plan = dispatch_plan
+        self.bone_matrices = bone_matrices
 
     def resolve(self):
         import Bridge.Mesh
@@ -107,3 +109,26 @@ class ComputeShaderProxy():
             mesh.dispatch_plan = None
 
         mesh.compute_shader_parameters = self.shader_parameters
+
+        # Upload per-frame bone matrices to the mesh's SSBO.
+        # bone_matrices is a bytes object (pickle-safe); reconstruct a ctypes
+        # array on the server side for the GL upload.
+        if self.bone_matrices is not None:
+            bone_ssbo = getattr(mesh, 'bone_matrices_ssbo', None)
+            if bone_ssbo is not None:
+                import ctypes
+                from Malt.GL.GL import glBindBuffer, glBufferData, glBufferSubData
+                from Malt.GL.GL import GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_DRAW
+                data_size = len(self.bone_matrices)
+                num_floats = data_size // ctypes.sizeof(ctypes.c_float)
+                c_arr = (ctypes.c_float * num_floats).from_buffer_copy(self.bone_matrices)
+                if data_size > bone_ssbo.size:
+                    # Reallocate if bone count changed.
+                    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bone_ssbo.buffer[0])
+                    glBufferData(GL_SHADER_STORAGE_BUFFER, data_size,
+                                 ctypes.pointer(c_arr), GL_DYNAMIC_DRAW)
+                    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+                    bone_ssbo.size = data_size
+                else:
+                    bone_ssbo.load_sub_data(
+                        ctypes.pointer(c_arr), data_size)

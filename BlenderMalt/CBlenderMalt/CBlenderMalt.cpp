@@ -105,6 +105,93 @@ EXPORT bool mesh_tangents(
   return genTangSpaceDefault(&mtc);
 }
 
+// Pack per-vertex bone influences into fixed-size (max 4) arrays.
+//
+// Input: CSR-style flat arrays of all bone influences across all vertices.
+//   in_offsets[vertex_count+1] — start/end indices into in_bones/in_weights per vertex
+//   in_bones[total_influences]  — bone index for each influence
+//   in_weights[total_influences] — weight for each influence
+//
+// Output: Packed arrays with exactly 4 slots per vertex.
+//   out_indices[vertex_count*4] — bone indices (unused slots = 0)
+//   out_weights[vertex_count*4] — normalized weights (unused slots = 0.0)
+//
+// For vertices with >4 influences: sorts by weight descending, takes top 4.
+// Weights are normalized to sum to 1.0.
+EXPORT void pack_bone_data(
+  int* in_offsets, int* in_bones, float* in_weights,
+  int vertex_count,
+  int* out_indices, float* out_weights)
+{
+  // Temp buffer for sorting influences (max reasonable per vertex).
+  // Vertices with more than 32 influences are truncated before sorting.
+  struct Influence { int bone; float weight; };
+  const int MAX_TEMP = 32;
+  Influence temp[MAX_TEMP];
+
+  for (int v = 0; v < vertex_count; v++)
+  {
+    int start = in_offsets[v];
+    int end   = in_offsets[v + 1];
+    int count = end - start;
+
+    // Clamp to temp buffer size.
+    if (count > MAX_TEMP) count = MAX_TEMP;
+
+    // Copy influences into temp buffer.
+    for (int i = 0; i < count; i++)
+    {
+      temp[i].bone   = in_bones[start + i];
+      temp[i].weight = in_weights[start + i];
+    }
+
+    // If more than 4, partial sort to find top 4 by weight (descending).
+    if (count > 4)
+    {
+      // Simple selection of top 4 — sufficient for small N.
+      for (int i = 0; i < 4; i++)
+      {
+        int best = i;
+        for (int j = i + 1; j < count; j++)
+        {
+          if (temp[j].weight > temp[best].weight)
+            best = j;
+        }
+        if (best != i)
+        {
+          Influence swap = temp[i];
+          temp[i] = temp[best];
+          temp[best] = swap;
+        }
+      }
+      count = 4;
+    }
+
+    // Normalize weights.
+    float total = 0.0f;
+    for (int i = 0; i < count; i++)
+      total += temp[i].weight;
+
+    float inv = (total > 0.0f) ? (1.0f / total) : 0.0f;
+
+    // Write to output (4 slots per vertex).
+    int base = v * 4;
+    for (int i = 0; i < 4; i++)
+    {
+      if (i < count)
+      {
+        out_indices[base + i] = temp[i].bone;
+        out_weights[base + i] = temp[i].weight * inv;
+      }
+      else
+      {
+        out_indices[base + i] = 0;
+        out_weights[base + i] = 0.0f;
+      }
+    }
+  }
+}
+
 EXPORT void pad_vec3_to_vec4(float* src, float* dst, int count)
 {
   for (int i = 0; i < count; i++)

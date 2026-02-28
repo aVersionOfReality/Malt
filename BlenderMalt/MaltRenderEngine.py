@@ -13,6 +13,39 @@ from . import MaltPipeline, MaltMeshes, MaltMaterial, CBlenderMalt
 
 CAPTURE = False
 
+def _find_armature_blender(obj):
+    """Find the armature object from the 'malt_armature' custom property."""
+    arm_obj = obj.get('malt_armature')
+    if arm_obj is not None and hasattr(arm_obj, 'type') and arm_obj.type == 'ARMATURE':
+        return arm_obj
+    return None
+
+def _extract_bone_matrices(armature_obj):
+    """Extract LBS skinning matrices as a bytes object (column-major floats).
+
+    Each matrix is: pose_bone.matrix @ bone.matrix_local.inverted()
+    This transforms from bind-pose armature-space to current-pose armature-space.
+    Returns bytes (bone_count * 16 floats) or None.  Uses bytes instead of ctypes
+    arrays because ctypes arrays cannot be pickled across the Bridge.
+    """
+    armature = armature_obj.data
+    bone_count = len(armature.bones)
+    if bone_count == 0:
+        return None
+
+    matrices = (ctypes.c_float * (bone_count * 16))()
+    for i, bone in enumerate(armature.bones):
+        pose_bone = armature_obj.pose.bones.get(bone.name)
+        if pose_bone is None:
+            mat = Matrix.Identity(4)
+        else:
+            mat = pose_bone.matrix @ bone.matrix_local.inverted()
+        # Flatten column-major (OpenGL convention).
+        for col in range(4):
+            for row in range(4):
+                matrices[i * 16 + col * 4 + row] = mat[row][col]
+    return bytes(matrices)
+
 # Set to True by track_compute_shader_changes() after a successful recompile so that
 # view_draw() knows it must submit a new render frame (request_new_frame was already
 # consumed before the recompile finished, so tag_redraw alone is not enough).
@@ -163,11 +196,23 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                                     dispatch_plan = [dict(step) for step in dispatch_plan_raw]
                                 else:
                                     dispatch_plan = None
+
+                                # Extract per-frame bone matrices if the dispatch
+                                # plan has a skin step.
+                                bone_matrices = None
+                                if dispatch_plan:
+                                    has_skin = any(s.get('type') == 'skin' for s in dispatch_plan)
+                                    if has_skin:
+                                        arm_obj = _find_armature_blender(obj)
+                                        if arm_obj is not None:
+                                            bone_matrices = _extract_bone_matrices(arm_obj)
+
                                 for i in range(len(malt_mesh)):
                                     proxy_key = ('compute', name, i)
                                     scene.proxys[proxy_key] = ComputeShaderProxy(
                                         name, i, compute_path, compute_params,
-                                        dispatch_plan=dispatch_plan)
+                                        dispatch_plan=dispatch_plan,
+                                        bone_matrices=bone_matrices)
                     else:
                         meshes[name] = None
 

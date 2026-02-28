@@ -180,6 +180,12 @@ class SSBO():
         glBufferData(GL_SHADER_STORAGE_BUFFER, size_bytes, buffer_ptr, usage)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
+    def load_sub_data(self, buffer_ptr, size_bytes, offset=0):
+        """Update a portion of the buffer without reallocating."""
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.buffer[0])
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, size_bytes, buffer_ptr)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
     def bind(self, storage_block):
         location = storage_block['bind']
         if self.location != location or self.BINDS.get(location) != self:

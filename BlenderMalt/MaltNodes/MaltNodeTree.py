@@ -399,8 +399,11 @@ class MaltTree(bpy.types.NodeTree):
                                     code += transpiler.declaration(
                                         param['type'], 0, var_ref, param['name'])
                     # Determine which variable this barrier's kernel smoothed.
+                    # Skin barriers write directly to deformed_positions/normals
+                    # and the post-skin segment should see those values — no
+                    # rest-buffer reset needed.
                     barrier_meta = self._get_barrier_meta(barrier)
-                    if barrier_meta:
+                    if barrier_meta and not barrier_meta.get('skin'):
                         target = barrier_meta.get('smooth_target', 'position')
                         smoothed_vars.add(target)
 
@@ -491,29 +494,44 @@ class MaltTree(bpy.types.NodeTree):
                 'iteration_param': iteration_param or '',
             })
 
-            # After each non-last segment, insert the smooth step for
+            # After each non-last segment, insert a kernel dispatch step for
             # the barrier that separates it from the next segment.
             if seg_idx < len(barriers):
                 barrier = barriers[seg_idx]
                 barrier_source_name = barrier.get_source_name()
-                # Build the parameter keys for this barrier's smooth params.
-                iter_key = transpiler.global_reference(
-                    barrier_source_name, 'smooth_iterations')
-                cotangent_factor_key = transpiler.global_reference(
-                    barrier_source_name, 'cotangent_factor')
-                quad_mode_key = transpiler.global_reference(
-                    barrier_source_name, 'quad_mode')
-                # Read smooth_target from barrier metadata (default: position).
                 barrier_meta = self._get_barrier_meta(barrier)
-                smooth_target = barrier_meta.get('smooth_target', 'position') if barrier_meta else 'position'
-                dispatch_plan.append({
-                    'type': 'smooth',
-                    'node_prefix': barrier_source_name,
-                    'iterations_key': iter_key,
-                    'cotangent_factor_key': cotangent_factor_key,
-                    'quad_mode_key': quad_mode_key,
-                    'smooth_target': smooth_target,
-                })
+
+                if barrier_meta and barrier_meta.get('skin'):
+                    # GPU Skinning barrier -> single-dispatch skin kernel step.
+                    # Check which inout outputs are actually connected downstream
+                    # so the kernel only writes the buffers the user wired up.
+                    skin_position = ('position' in barrier.outputs and
+                                     barrier.outputs['position'].is_linked)
+                    skin_normal = ('normal' in barrier.outputs and
+                                   barrier.outputs['normal'].is_linked)
+                    dispatch_plan.append({
+                        'type': 'skin',
+                        'node_prefix': barrier_source_name,
+                        'skin_position': skin_position,
+                        'skin_normal': skin_normal,
+                    })
+                else:
+                    # Laplacian smooth barrier -> iterative smooth kernel step.
+                    iter_key = transpiler.global_reference(
+                        barrier_source_name, 'smooth_iterations')
+                    cotangent_factor_key = transpiler.global_reference(
+                        barrier_source_name, 'cotangent_factor')
+                    quad_mode_key = transpiler.global_reference(
+                        barrier_source_name, 'quad_mode')
+                    smooth_target = barrier_meta.get('smooth_target', 'position') if barrier_meta else 'position'
+                    dispatch_plan.append({
+                        'type': 'smooth',
+                        'node_prefix': barrier_source_name,
+                        'iterations_key': iter_key,
+                        'cotangent_factor_key': cotangent_factor_key,
+                        'quad_mode_key': quad_mode_key,
+                        'smooth_target': smooth_target,
+                    })
 
         self['linked_param_keys'] = list(collect_linked_param_keys())
         self['segment_sources'] = segment_sources
