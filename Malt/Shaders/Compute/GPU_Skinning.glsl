@@ -6,13 +6,13 @@
 // using bone matrices uploaded each frame from Blender's armature.
 //
 // Requires:
-//   - An armature modifier on the object (can be disabled)
+//   - The 'malt_armature' custom property on the object pointing to the armature
 //   - Vertex groups matching bone names
 //   - A compute node tree assigned to the mesh
 //
-// The armature modifier identifies which armature is associated with
-// the object. Its state (enabled/disabled) is irrelevant — bone data
-// is extracted from the armature's pose bones directly.
+// Position and normal inputs default to the compute shader's built-in
+// position/normal variables when disconnected. Connect upstream nodes
+// to override.
 
 #ifndef COMPUTE_GPU_SKINNING_GLSL
 #define COMPUTE_GPU_SKINNING_GLSL
@@ -25,6 +25,8 @@
 
 /*  META
     @meta: label=GPU Skinning; barrier=true; skin=true;
+    @position: default_initialization=position;
+    @normal: default_initialization=normal;
 */
 void GPU_Skinning(inout vec3 position, inout vec3 normal) {}
 

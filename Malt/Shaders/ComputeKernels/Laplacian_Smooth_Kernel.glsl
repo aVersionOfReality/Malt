@@ -31,8 +31,9 @@
 //     [i*3+2] = flags (bit 0 = IS_DIAGONAL: quad 0-2 diagonal, not a real edge)
 //
 // Group-based smoothing (GROUPS_ENABLED == 1):
-//   Fan group IDs (binding 2, ssbo_data_2.x) control scatter: only write
-//   to corners at the same vertex that share the current corner's fan group.
+//   Fan group IDs (binding 22, fan_groups_buf[]) are computed from corner
+//   normal similarity at mesh load time.  Scatter: only write to corners at
+//   the same vertex that share the current corner's fan group.
 //   Gather: compare edge's owning fan with current corner's fan group.
 //   If they match, read from the precomputed corner index.  If not, skip.
 //
@@ -58,8 +59,8 @@ layout(std430, binding = 16) readonly buffer COTANGENT_WEIGHTS { float cotangent
 // Built CPU-side from fan group IDs + mesh topology.
 layout(std430, binding = 17) readonly buffer EDGE_META { int edge_meta[]; };
 
-// Fan group IDs for scatter filtering.  ssbo_data_2.x = fan group (float → int).
-layout(std430, binding = 2)  readonly buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
+// Fan group IDs for scatter filtering (computed from normals at mesh load).
+layout(std430, binding = 22) readonly buffer FAN_GROUPS { int fan_groups_buf[]; };
 
 // Rest normals for post-iteration mix (binding 12, already bound by Pipeline).
 layout(std430, binding = 12) readonly buffer REST_NORMALS { vec4 rest_normals_buf[]; };
@@ -86,7 +87,7 @@ void main() {
     // Read fan group ID for this corner (if group-based smoothing is enabled).
     int my_fan_group = -1;
     if (GROUPS_ENABLED > 0) {
-        my_fan_group = int(ssbo_data_2[idx].x);
+        my_fan_group = fan_groups_buf[idx];
     }
 
     // --- Gather neighbor values via adjacency CSR with cotangent weights ---
@@ -171,7 +172,7 @@ void main() {
     int my_end   = vert_corner_data[vert + 1];
     for (int i = my_start; i < my_end; i++) {
         int corner = vert_corner_data[vc_base + i];
-        if (my_fan_group >= 0 && int(ssbo_data_2[corner].x) != my_fan_group) {
+        if (my_fan_group >= 0 && fan_groups_buf[corner] != my_fan_group) {
             continue;  // Different fan group — skip
         }
         smooth_dst[corner] = vec4(smoothed, 0.0);

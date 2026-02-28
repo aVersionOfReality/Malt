@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, cotangent_weights=None, edge_metadata=None, bone_indices=None, bone_weights=None, bone_count=0):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, fan_groups=None, cotangent_weights=None, edge_metadata=None, bone_indices=None, bone_weights=None, bone_count=0):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -234,6 +234,11 @@ class Pipeline():
         if vert_corner_data is not None:
             vert_corner_data_ssbo = SSBO()
             vert_corner_data_ssbo.load_raw(vert_corner_data.buffer(), vert_corner_data.size_in_bytes())
+
+        fan_groups_ssbo = None
+        if fan_groups is not None:
+            fan_groups_ssbo = SSBO()
+            fan_groups_ssbo.load_raw(fan_groups.buffer(), fan_groups.size_in_bytes())
 
         cotangent_weights_ssbo = None
         if cotangent_weights is not None:
@@ -316,6 +321,7 @@ class Pipeline():
             result.corner_vert_ssbo = corner_vert_ssbo
             result.adjacency_data_ssbo = adjacency_data_ssbo
             result.vert_corner_data_ssbo = vert_corner_data_ssbo
+            result.fan_groups_ssbo = fan_groups_ssbo
             result.cotangent_weights_ssbo = cotangent_weights_ssbo
             result.edge_metadata_ssbo = edge_metadata_ssbo
             result.smooth_scratch_ssbo = smooth_scratch_ssbo
@@ -526,6 +532,8 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 17, m.edge_metadata_ssbo.buffer[0])
         if m.smooth_weights_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 18, m.smooth_weights_ssbo.buffer[0])
+        if m.fan_groups_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 22, m.fan_groups_ssbo.buffer[0])
         if getattr(m, 'bone_matrices_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, m.bone_matrices_ssbo.buffer[0])
         if getattr(m, 'bone_indices_ssbo', None) is not None:
@@ -565,8 +573,8 @@ class Pipeline():
             if isinstance(val, (int, float)):
                 qm = int(val)
 
-        # Group-based smoothing: enabled when fan group data exists in ssbo_data_2.
-        groups_enabled = (len(m.ssbo_list) > 2 and m.ssbo_list[2] is not None)
+        # Group-based smoothing: enabled when fan group data exists (computed from normals).
+        groups_enabled = (m.fan_groups_ssbo is not None)
 
         if si <= 0 or m.smooth_scratch_ssbo is None:
             return False
@@ -583,8 +591,7 @@ class Pipeline():
         if 'COTANGENT_FACTOR' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['COTANGENT_FACTOR'].set_value(cf)
 
-        # Group-based smoothing: edge_metadata already bound at 17 by _bind_compute_ssbos.
-        # ssbo_data_2 already bound at 2 (kernel reads fan group from .x for scatter).
+        # Group-based smoothing: fan_groups_ssbo bound at 22 by _bind_compute_ssbos.
         if 'GROUPS_ENABLED' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['GROUPS_ENABLED'].set_value(1 if groups_enabled else 0)
 

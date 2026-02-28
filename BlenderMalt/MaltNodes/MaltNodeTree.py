@@ -303,9 +303,11 @@ class MaltTree(bpy.types.NodeTree):
             self['linked_param_keys'] = list(collect_linked_param_keys())
             self['source'] = pipeline_graph.generate_source(shader)
             # Clear multi-segment data (IDProperties cannot store None)
-            for key in ('segment_sources', 'dispatch_plan'):
+            for key in ('segment_sources', 'dispatch_plan', 'compute_requirements'):
                 if key in self:
                     del self[key]
+            # No barriers → no special data requirements.
+            self['compute_requirements'] = {'smooth_data': 0, 'bone_data': 0}
             return self['source']
 
         # ── Multi-segment path: partition at barrier nodes ──
@@ -533,9 +535,20 @@ class MaltTree(bpy.types.NodeTree):
                         'smooth_target': smooth_target,
                     })
 
+        # Build compute_requirements from the dispatch plan so load_mesh()
+        # knows which expensive data structures to build for this graph.
+        # Values are ints (0/1) because IDProperties stores bools as ints.
+        compute_requirements = {'smooth_data': 0, 'bone_data': 0}
+        for step in dispatch_plan:
+            if step['type'] == 'smooth':
+                compute_requirements['smooth_data'] = 1
+            elif step['type'] == 'skin':
+                compute_requirements['bone_data'] = 1
+
         self['linked_param_keys'] = list(collect_linked_param_keys())
         self['segment_sources'] = segment_sources
         self['dispatch_plan'] = dispatch_plan
+        self['compute_requirements'] = compute_requirements
         # Primary source is the first segment (for backward compat / caching).
         self['source'] = segment_sources[0] if segment_sources else ''
         return self['source']
