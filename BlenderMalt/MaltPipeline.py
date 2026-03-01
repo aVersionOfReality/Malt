@@ -1,4 +1,4 @@
-import os, platform, sys, time
+import os, platform, time
 import bpy
 from BlenderMalt.MaltUtils import malt_path_set_transform, malt_path_get_transform
 from . import MaltMaterial, MaltMeshes, MaltTextures
@@ -133,7 +133,6 @@ class MaltPipeline(bpy.types.PropertyGroup):
         row.operator('wm.malt_reload_pipeline', text='', icon='FILE_REFRESH')
         layout.prop(self, 'plugins_dir')
         layout.prop(self, 'viewport_bit_depth')
-        layout.operator('wm.malt_full_refresh', icon='RECOVER_LAST')
 
 
 class OT_MaltReloadPipeline(bpy.types.Operator):
@@ -148,46 +147,6 @@ class OT_MaltReloadPipeline(bpy.types.Operator):
         import Bridge
         Bridge.reload()
         context.scene.world.malt.update_pipeline(context)
-        return {'FINISHED'}
-
-
-class OT_MaltFullRefresh(bpy.types.Operator):
-    bl_idname = "wm.malt_full_refresh"
-    bl_label = "Malt Full Refresh"
-    bl_description = ("Reload all Malt Python modules and restart the server. "
-                      "Equivalent to restarting Blender — picks up code changes "
-                      "in BlenderMalt, Bridge, and Malt modules")
-
-    @classmethod
-    def poll(cls, context):
-        return context.scene.render.engine == 'MALT' and context.scene.world is not None
-
-    def execute(self, context):
-        import importlib, Bridge
-
-        # Reload Bridge modules (server-side code).
-        Bridge.reload()
-
-        # Reload all BlenderMalt modules (client-side code).
-        # Uses the same module list as __init__.register().
-        from BlenderMalt import __init__ as _bl_init
-        for module in _bl_init.get_modules():
-            importlib.reload(module)
-
-        # Reload Malt server-side modules that are imported client-side
-        # (e.g. Pipeline, PipelineParameters, SourceTranspiler).
-        import Malt
-        for name in list(sys.modules.keys()):
-            if name.startswith('Malt.') or name == 'Malt':
-                try:
-                    importlib.reload(sys.modules[name])
-                except Exception:
-                    pass
-
-        # Restart server, reset all caches, reinitialize parameters.
-        context.scene.world.malt.update_pipeline(context)
-
-        self.report({'INFO'}, "Malt full refresh complete")
         return {'FINISHED'}
 
 
@@ -209,7 +168,6 @@ class MALT_PT_Pipeline(bpy.types.Panel):
 classes = (
     MaltPipeline,
     OT_MaltReloadPipeline,
-    OT_MaltFullRefresh,
     MALT_PT_Pipeline,
 )
 

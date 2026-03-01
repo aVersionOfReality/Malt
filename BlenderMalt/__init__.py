@@ -182,9 +182,9 @@ class OT_MaltReloadPlugins(bpy.types.Operator):
         return{"FINISHED"}
 
 def get_modules():
-    from . import MaltUtils, MaltTextures, MaltMeshes, MaltLights, MaltProperties, MaltPipeline, MaltMaterial, MaltRenderEngine
+    from . import MaltUtils, MaltTextures, MaltMeshes, MaltLights, MaltProperties, MaltPipeline, MaltMaterial, MaltRenderEngine, MaltDeveloperPanel
     from . MaltNodes import _init_ as MaltNodes
-    return [ MaltUtils, MaltTextures, MaltMeshes, MaltLights, MaltProperties, MaltPipeline, MaltNodes, MaltMaterial, MaltRenderEngine ]
+    return [ MaltUtils, MaltTextures, MaltMeshes, MaltLights, MaltProperties, MaltPipeline, MaltNodes, MaltMaterial, MaltRenderEngine, MaltDeveloperPanel ]
 
 classes=[
     Preferences,
