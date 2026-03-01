@@ -48,6 +48,9 @@ class Preferences(bpy.types.AddonPreferences):
     debug_mode : bpy.props.BoolProperty(name="Debug Mode", default=False, update=update_debug_mode,
         description="Developers only. Do not touch !!!")
 
+    show_timings : bpy.props.BoolProperty(name="Show Timings", default=False,
+        description="Print timing breakdowns for mesh loading and other operations to the system console")
+
     #Drawn in NODE_PT_overlay
     show_socket_types : bpy.props.BoolProperty(name='Show Socket Types', default=True)
     show_internal_nodes : bpy.props.BoolProperty(name='Show Internal Nodes', default=False)

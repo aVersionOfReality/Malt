@@ -1,4 +1,3 @@
-import sys
 import bpy
 
 
@@ -56,36 +55,21 @@ class OT_MaltRefreshShaders(bpy.types.Operator):
 class OT_MaltFullRefresh(bpy.types.Operator):
     bl_idname = "wm.malt_full_refresh"
     bl_label = "Full Refresh"
-    bl_description = ("Reload all Malt Python modules and restart the server. "
-                      "Equivalent to restarting Blender — picks up code changes "
-                      "in BlenderMalt, Bridge, and Malt modules")
+    bl_description = ("Restart the Malt server and reinitialize all caches. "
+                      "Picks up server-side code changes (Malt/, Bridge/) "
+                      "without restarting Blender")
 
     @classmethod
     def poll(cls, context):
         return context.scene.render.engine == 'MALT' and context.scene.world is not None
 
     def execute(self, context):
-        import importlib, Bridge
-
-        # Reload Bridge modules (server-side code).
-        Bridge.reload()
-
-        # Reload all BlenderMalt modules (client-side code).
-        # Uses the same module list as __init__.register().
-        from BlenderMalt import __init__ as _bl_init
-        for module in _bl_init.get_modules():
-            importlib.reload(module)
-
-        # Reload Malt server-side modules that are imported client-side
-        # (e.g. Pipeline, PipelineParameters, SourceTranspiler).
-        for name in list(sys.modules.keys()):
-            if name.startswith('Malt.') or name == 'Malt':
-                try:
-                    importlib.reload(sys.modules[name])
-                except Exception:
-                    pass
-
         # Restart server, reset all caches, reinitialize parameters.
+        # This spawns a fresh server process that loads current Malt/
+        # and Bridge/ code from disk, so server-side changes are picked up.
+        # Client-side (BlenderMalt/) changes require a Blender restart
+        # because importlib.reload() breaks isinstance() checks across
+        # modules that hold references to old class objects.
         context.scene.world.malt.update_pipeline(context)
 
         self.report({'INFO'}, "Malt full refresh complete")
@@ -95,7 +79,7 @@ class OT_MaltFullRefresh(bpy.types.Operator):
 class VIEW3D_PT_AVR_Malt(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "AVR Malt"
+    bl_category = "View"
     bl_label = "AVR Malt"
 
     @classmethod
@@ -104,9 +88,15 @@ class VIEW3D_PT_AVR_Malt(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.operator('wm.console_toggle', icon='CONSOLE')
         layout.operator('wm.malt_refresh_meshes', icon='MESH_DATA')
         layout.operator('wm.malt_refresh_shaders', icon='NODE_MATERIAL')
         layout.operator('wm.malt_full_refresh', icon='RECOVER_LAST')
+
+        preferences = context.preferences.addons['BlenderMalt'].preferences
+        layout.separator()
+        layout.label(text="Debug")
+        layout.prop(preferences, 'show_timings')
 
 
 classes = (

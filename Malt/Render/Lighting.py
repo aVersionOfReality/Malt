@@ -300,7 +300,9 @@ def get_sun_cascades(sun_from_world_matrix, projection_matrix, view_from_world_m
         return a * (1.0 - f) + b * f
 
     for i in range(cascades_count+1):
-        split_log = n * pow(f/n, i/cascades_count)
+        # Use absolute values for the logarithmic split to avoid complex
+        # results from pow() with a negative base and fractional exponent.
+        split_log = n * pow(abs(f/n), i/cascades_count)
         split_uniform = n + (f-n) * (i/cascades_count)
         split = lerp(split_uniform, split_log, cascades_distribution_scalar)
 

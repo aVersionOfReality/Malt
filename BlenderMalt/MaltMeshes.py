@@ -392,18 +392,19 @@ def load_mesh(object, name):
 
     _t7 = _time.perf_counter()
 
-    _smooth_label = "C ext" if needs_smooth else "SKIPPED"
-    _bone_label = f"{_t7 - _t6:.3f}s" if needs_bones else "SKIPPED"
-    print(f"[MaltMeshes] load_mesh timing for '{name}' "
-          f"(V={vertex_count}, L={loop_count}, smooth={_smooth_label}, bones={_bone_label}):")
-    print(f"  retrieve_mesh_data + setup : {_t1 - _t0:.3f}s")
-    print(f"  rest_pos + corner_vert     : {_t2 - _t1:.3f}s")
-    print(f"  (smooth data placeholder)  : {_t3 - _t2:.3f}s")
-    print(f"  (cotangent placeholder)    : {_t4 - _t3:.3f}s")
-    print(f"  normals + UVs + colors     : {_t5 - _t4:.3f}s")
-    print(f"  smooth C ext (all 4)       : {_t6 - _t5:.3f}s")
-    print(f"  bone data                  : {_bone_label}")
-    print(f"  TOTAL                      : {_t7 - _t0:.3f}s")
+    if bpy.context.preferences.addons['BlenderMalt'].preferences.show_timings:
+        _smooth_label = "C ext" if needs_smooth else "SKIPPED"
+        _bone_label = f"{_t7 - _t6:.3f}s" if needs_bones else "SKIPPED"
+        print(f"[MaltMeshes] load_mesh timing for '{name}' "
+              f"(V={vertex_count}, L={loop_count}, smooth={_smooth_label}, bones={_bone_label}):")
+        print(f"  retrieve_mesh_data + setup : {_t1 - _t0:.3f}s")
+        print(f"  rest_pos + corner_vert     : {_t2 - _t1:.3f}s")
+        print(f"  (smooth data placeholder)  : {_t3 - _t2:.3f}s")
+        print(f"  (cotangent placeholder)    : {_t4 - _t3:.3f}s")
+        print(f"  normals + UVs + colors     : {_t5 - _t4:.3f}s")
+        print(f"  smooth C ext (all 4)       : {_t6 - _t5:.3f}s")
+        print(f"  bone data                  : {_bone_label}")
+        print(f"  TOTAL                      : {_t7 - _t0:.3f}s")
 
     mesh_data = {
         'positions': positions,
