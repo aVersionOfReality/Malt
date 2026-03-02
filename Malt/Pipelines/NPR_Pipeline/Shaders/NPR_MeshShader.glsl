@@ -53,13 +53,11 @@ void COMMON_VERTEX_SHADER(inout Vertex V){}
 /* META
     @strength: default=0.75; min=0.0; max=1.0; doc=Amount of Phong displacement (0=flat, 1=full curvature);
     @normal: default_initialization=NORMAL; doc=Normal used for displacement projection. Override with a smooth normal to fix sharp edge gaps.;
-    @scale_by_curvature: default=0.0; min=0.0; max=1.0; doc=Blend between uniform strength (0) and strength scaled by normal variation (1). Reduces bulging on flat areas.;
-    @curvature_mode: default=0; min=0; max=1; doc=How patch curvature is estimated from corner normals. 0=min edge dot (conservative), 1=average edge dot.;
 */
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float scale_by_curvature, inout int curvature_mode);
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal);
 
 #ifndef CUSTOM_TESSELLATION
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float scale_by_curvature, inout int curvature_mode){}
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal){}
 #endif
 
 vec3 VERTEX_DISPLACEMENT_SHADER();
@@ -152,9 +150,7 @@ void main()
 
     TESS_STRENGTH = 0.75;
     TESS_NORMAL = NORMAL;
-    TESS_SCALE_BY_CURVATURE = 0.0;
-    TESS_CURVATURE_MODE = 0;
-    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL, TESS_SCALE_BY_CURVATURE, TESS_CURVATURE_MODE);
+    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL);
 
     VERTEX_SETUP_OUTPUT();
 }
@@ -197,20 +193,12 @@ void main()
 {
     TES_INTERPOLATE_ALL();
 
-    // Compute curvature-adaptive effective strength.
-    float curvature = curvature_from_normals(
-        TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2],
-        TCS_TESS_CURVATURE_MODE[0]
-    );
-    float curvature_factor = smoothstep(0.0, 0.2, curvature);
-    float effective_strength = mix(IO_TESS_STRENGTH, IO_TESS_STRENGTH * curvature_factor, IO_TESS_SCALE_BY_CURVATURE);
-
     // Phong tessellation displacement using per-vertex strength and normal.
     IO_POSITION = phong_tessellate(
         IO_POSITION,
         TCS_POSITION[0], TCS_POSITION[1], TCS_POSITION[2],
         TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2],
-        effective_strength
+        IO_TESS_STRENGTH
     );
 
     gl_Position = PROJECTION * CAMERA * vec4(IO_POSITION, 1.0);

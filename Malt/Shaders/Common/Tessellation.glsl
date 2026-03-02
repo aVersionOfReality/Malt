@@ -22,8 +22,6 @@ in mat4 MODEL[];
 in vec3 IO_BARYCENTRIC[];
 in float IO_TESS_STRENGTH[];
 in vec3 IO_TESS_NORMAL[];
-in float IO_TESS_SCALE_BY_CURVATURE[];
-flat in int IO_TESS_CURVATURE_MODE[];
 
 layout(vertices = 3) out;
 
@@ -39,8 +37,6 @@ out mat4 TCS_MODEL[];
 out vec3 TCS_BARYCENTRIC[];
 out float TCS_TESS_STRENGTH[];
 out vec3 TCS_TESS_NORMAL[];
-out float TCS_TESS_SCALE_BY_CURVATURE[];
-flat out int TCS_TESS_CURVATURE_MODE[];
 
 // Pass all per-vertex attributes from VS to TES.
 #define TCS_PASSTHROUGH() \
@@ -55,9 +51,7 @@ flat out int TCS_TESS_CURVATURE_MODE[];
     TCS_MODEL[gl_InvocationID] = MODEL[gl_InvocationID]; \
     TCS_BARYCENTRIC[gl_InvocationID] = IO_BARYCENTRIC[gl_InvocationID]; \
     TCS_TESS_STRENGTH[gl_InvocationID] = IO_TESS_STRENGTH[gl_InvocationID]; \
-    TCS_TESS_NORMAL[gl_InvocationID] = IO_TESS_NORMAL[gl_InvocationID]; \
-    TCS_TESS_SCALE_BY_CURVATURE[gl_InvocationID] = IO_TESS_SCALE_BY_CURVATURE[gl_InvocationID]; \
-    TCS_TESS_CURVATURE_MODE[gl_InvocationID] = IO_TESS_CURVATURE_MODE[gl_InvocationID];
+    TCS_TESS_NORMAL[gl_InvocationID] = IO_TESS_NORMAL[gl_InvocationID];
 
 #endif // TESS_CONTROL_SHADER
 
@@ -79,8 +73,6 @@ in mat4 TCS_MODEL[];
 in vec3 TCS_BARYCENTRIC[];
 in float TCS_TESS_STRENGTH[];
 in vec3 TCS_TESS_NORMAL[];
-in float TCS_TESS_SCALE_BY_CURVATURE[];
-flat in int TCS_TESS_CURVATURE_MODE[];
 
 // TES writes scalar outputs to FS (same names VS normally writes).
 out vec3 IO_POSITION;
@@ -95,8 +87,6 @@ out mat4 MODEL;
 out vec3 IO_BARYCENTRIC;
 out float IO_TESS_STRENGTH;
 out vec3 IO_TESS_NORMAL;
-out float IO_TESS_SCALE_BY_CURVATURE;
-flat out int IO_TESS_CURVATURE_MODE;
 
 // Interpolate all attributes using barycentric coordinates and write to IO outputs.
 #define TES_INTERPOLATE_ALL() \
@@ -113,27 +103,7 @@ flat out int IO_TESS_CURVATURE_MODE;
     MODEL = TCS_MODEL[0]; \
     IO_BARYCENTRIC = gl_TessCoord; \
     IO_TESS_STRENGTH = TESS_INTERPOLATE_3(TCS_TESS_STRENGTH[0], TCS_TESS_STRENGTH[1], TCS_TESS_STRENGTH[2]); \
-    IO_TESS_NORMAL = normalize(TESS_INTERPOLATE_3(TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2])); \
-    IO_TESS_SCALE_BY_CURVATURE = TESS_INTERPOLATE_3(TCS_TESS_SCALE_BY_CURVATURE[0], TCS_TESS_SCALE_BY_CURVATURE[1], TCS_TESS_SCALE_BY_CURVATURE[2]); \
-    IO_TESS_CURVATURE_MODE = TCS_TESS_CURVATURE_MODE[0];
-
-// Estimate patch curvature from the three corner normals.
-// Returns 0 for flat patches, 1 for strongly curved.
-// mode 0 = minimum edge dot (conservative), mode 1 = average edge dot.
-float curvature_from_normals(vec3 n0, vec3 n1, vec3 n2, int mode)
-{
-    float d01 = dot(n0, n1);
-    float d12 = dot(n1, n2);
-    float d20 = dot(n2, n0);
-    if (mode == 1)
-    {
-        float avg = (d01 + d12 + d20) / 3.0;
-        return clamp(1.0 - avg, 0.0, 1.0);
-    }
-    // mode 0: minimum edge dot (default)
-    float minDot = min(min(d01, d12), d20);
-    return clamp(1.0 - minDot, 0.0, 1.0);
-}
+    IO_TESS_NORMAL = normalize(TESS_INTERPOLATE_3(TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2]));
 
 // Phong tessellation: project interpolated position onto tangent planes at each
 // original vertex, blend projections by barycentric weights.
