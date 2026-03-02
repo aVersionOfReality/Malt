@@ -16,6 +16,8 @@ vec4 COLOR[4];
 uvec4 ID;
 float TESS_STRENGTH;
 vec3 TESS_NORMAL;
+float TESS_SCALE_BY_CURVATURE;
+int TESS_CURVATURE_MODE;
 
 #if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 vertex_out mat4 MODEL;
@@ -82,6 +84,8 @@ flat vertex_out uvec4 IO_ID;
 vertex_out vec3 IO_BARYCENTRIC;
 vertex_out float IO_TESS_STRENGTH;
 vertex_out vec3 IO_TESS_NORMAL;
+vertex_out float IO_TESS_SCALE_BY_CURVATURE;
+flat vertex_out int IO_TESS_CURVATURE_MODE;
 #endif
 
 #if !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
@@ -122,6 +126,8 @@ void VERTEX_SETUP_OUTPUT()
     IO_ID = ID;
     IO_TESS_STRENGTH = TESS_STRENGTH;
     IO_TESS_NORMAL = TESS_NORMAL;
+    IO_TESS_SCALE_BY_CURVATURE = TESS_SCALE_BY_CURVATURE;
+    IO_TESS_CURVATURE_MODE = TESS_CURVATURE_MODE;
 
     // Per-vertex barycentric coordinates for wireframe rendering.
     // Vertices cycle in groups of 3 for GL_TRIANGLES.
