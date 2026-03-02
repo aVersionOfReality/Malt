@@ -53,7 +53,9 @@ def load_mesh(object, name):
         return None
 
     compute_reqs = _get_compute_requirements(object)
-    needs_smooth = bool(compute_reqs.get('smooth_data', 0))
+    needs_curvature = bool(compute_reqs.get('curvature_data', 0))
+    # Curvature node needs adjacency CSR + cotangent weights, so imply smooth_data.
+    needs_smooth = bool(compute_reqs.get('smooth_data', 0)) or needs_curvature
     needs_bones = bool(compute_reqs.get('bone_data', 0))
 
     _t0 = _time.perf_counter()

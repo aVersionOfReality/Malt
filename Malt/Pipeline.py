@@ -291,6 +291,16 @@ class Pipeline():
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             bone_matrices_ssbo.size = matrices_size
 
+        # Per-corner curvature values (written by Compute_Curvature node, read by mesh shader).
+        curvature_ssbo = None
+        if loop_count > 0:
+            curvature_ssbo = SSBO()
+            curvature_size = loop_count * 4  # float per loop
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, curvature_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, curvature_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            curvature_ssbo.size = curvature_size
+
         results = []
 
         for i, index in enumerate(indices):
@@ -330,6 +340,7 @@ class Pipeline():
             result.bone_weights_ssbo = bone_weights_ssbo
             result.bone_matrices_ssbo = bone_matrices_ssbo
             result.bone_count = bone_count
+            result.curvature_ssbo = curvature_ssbo
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE, stride=0):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -540,6 +551,8 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 20, m.bone_indices_ssbo.buffer[0])
         if getattr(m, 'bone_weights_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 21, m.bone_weights_ssbo.buffer[0])
+        if getattr(m, 'curvature_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 23, m.curvature_ssbo.buffer[0])
 
     def _run_smooth_step(self, m, step, compute_params, workgroups):
         """Run a single Laplacian smooth dispatch step (ping-pong kernel)."""
@@ -997,6 +1010,13 @@ class Pipeline():
                         block_name = f'SSBO_DATA_{i}'
                         if ssbo is not None and block_name in shader.storage_blocks:
                             ssbo.bind(shader.storage_blocks[block_name])
+
+                curvature_ssbo = getattr(mesh.mesh, 'curvature_ssbo', None)
+                has_curvature = curvature_ssbo is not None
+                if has_curvature:
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 23, curvature_ssbo.buffer[0])
+                if 'CURVATURE_SSBO_ACTIVE' in shader.uniforms:
+                    shader.uniforms['CURVATURE_SSBO_ACTIVE'].bind(has_curvature)
 
                 for scale_group, batches in meshes[mesh].items():
                     if scale_group != _scale_group:

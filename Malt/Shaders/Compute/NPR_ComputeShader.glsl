@@ -15,6 +15,7 @@
 //   17   = edge_metadata          — int[], per-adjacency-entry triplets [owning_fan, gather_corner, flags] (smooth kernel only; flags bit 0 = IS_DIAGONAL)
 //   18   = smooth_weights         — loop-indexed vec4[], per-corner weight params (written by barrier node, read by smooth kernel):
 //                                    .x = application_strength, .y = contribution_strength, .z = own_normal_strength, .w = mix_factor
+//   23   = curvature_ssbo         — loop-indexed float[], per-corner curvature (written by Compute_Curvature node)
 //
 // Every .compute.glsl node tree must implement:
 //   void COMPUTE_SHADER(inout vec3 position, inout vec3 normal)
@@ -92,6 +93,17 @@ layout(std430, binding = 12) readonly buffer REST_NORMALS {
 //   .x = application_strength, .y = contribution_strength, .z = own_normal_strength, .w = mix_factor
 layout(std430, binding = 18) buffer SMOOTH_WEIGHTS {
     vec4 smooth_weights[];
+};
+
+// Per-edge cotangent weights (parallel to adjacency indices).
+// Used by Laplacian smooth kernel and curvature computation.
+layout(std430, binding = 16) readonly buffer COTANGENT_WEIGHTS {
+    float cotangent_weights[];
+};
+
+// Per-corner curvature values written by Compute_Curvature node.
+layout(std430, binding = 23) buffer CURVATURE_DATA {
+    float curvature_ssbo[];
 };
 
 // Packed CSR buffers — each contains [offsets (VERTEX_COUNT+1 ints) | indices (N ints)].

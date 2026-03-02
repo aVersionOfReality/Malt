@@ -183,6 +183,19 @@ void SSBO_Color(
 
 #endif //NO_SSBO_COLOR_INPUT
 
+#ifndef NO_SSBO_COLOR_INPUT
+
+/*  META
+    @meta: label=Compute Curvature; subcategory=SSBO;
+    @result: label=Curvature;
+*/
+void Compute_Curvature_Input(out float result)
+{
+    result = CURVATURE_SSBO_ACTIVE ? curvature_ssbo[IO_VERTEX_ID] : 0.0;
+}
+
+#endif //NO_SSBO_COLOR_INPUT
+
 #ifndef NO_ID_INPUT
 
 /*  META

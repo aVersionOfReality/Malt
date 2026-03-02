@@ -268,14 +268,16 @@ class MaltTree(bpy.types.NodeTree):
             add_node_inputs(output, nodes, output.io_type)
             all_topo_nodes[output.io_type] = (nodes, output)
 
-        # Check for barrier nodes in any output's topo list.
+        # Check for barrier nodes and curvature nodes in any output's topo list.
         has_barriers = False
+        has_curvature = False
         for io_type, (nodes, output) in all_topo_nodes.items():
             for node in nodes:
                 if self._is_barrier_node(node):
                     has_barriers = True
-                    break
-            if has_barriers:
+                if getattr(node, 'function_type', '') == 'Compute_Curvature':
+                    has_curvature = True
+            if has_barriers and has_curvature:
                 break
 
         if not has_barriers:
@@ -306,8 +308,12 @@ class MaltTree(bpy.types.NodeTree):
             for key in ('segment_sources', 'dispatch_plan', 'compute_requirements'):
                 if key in self:
                     del self[key]
-            # No barriers → no special data requirements.
-            self['compute_requirements'] = {'smooth_data': 0, 'bone_data': 0}
+            # No barriers → no special data requirements (except curvature if detected).
+            self['compute_requirements'] = {
+                'smooth_data': 1 if has_curvature else 0,
+                'bone_data': 0,
+                'curvature_data': 1 if has_curvature else 0,
+            }
             return self['source']
 
         # ── Multi-segment path: partition at barrier nodes ──
@@ -538,12 +544,16 @@ class MaltTree(bpy.types.NodeTree):
         # Build compute_requirements from the dispatch plan so load_mesh()
         # knows which expensive data structures to build for this graph.
         # Values are ints (0/1) because IDProperties stores bools as ints.
-        compute_requirements = {'smooth_data': 0, 'bone_data': 0}
+        compute_requirements = {'smooth_data': 0, 'bone_data': 0, 'curvature_data': 0}
         for step in dispatch_plan:
             if step['type'] == 'smooth':
                 compute_requirements['smooth_data'] = 1
             elif step['type'] == 'skin':
                 compute_requirements['bone_data'] = 1
+        if has_curvature:
+            compute_requirements['curvature_data'] = 1
+            # Curvature node needs adjacency CSR + cotangent weights.
+            compute_requirements['smooth_data'] = 1
 
         self['linked_param_keys'] = list(collect_linked_param_keys())
         self['segment_sources'] = segment_sources

@@ -16,6 +16,7 @@ vec4 COLOR[4];
 uvec4 ID;
 float TESS_STRENGTH;
 vec3 TESS_NORMAL;
+float TESS_CURVATURE;
 
 #if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 vertex_out mat4 MODEL;
@@ -69,6 +70,10 @@ layout(std430, binding = 4) buffer SSBO_DATA_4 { vec4 ssbo_data_4[]; };
 layout(std430, binding = 5) buffer SSBO_DATA_5 { vec4 ssbo_data_5[]; };
 layout(std430, binding = 6) buffer SSBO_DATA_6 { vec4 ssbo_data_6[]; };
 layout(std430, binding = 7) buffer SSBO_DATA_7 { vec4 ssbo_data_7[]; };
+
+// Per-corner curvature from compute shader (binding 23, read-only in mesh shader).
+layout(std430, binding = 23) readonly buffer CURVATURE_DATA { float curvature_ssbo[]; };
+uniform bool CURVATURE_SSBO_ACTIVE = false;
 #endif
 
 #if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
@@ -82,6 +87,7 @@ flat vertex_out uvec4 IO_ID;
 vertex_out vec3 IO_BARYCENTRIC;
 vertex_out float IO_TESS_STRENGTH;
 vertex_out vec3 IO_TESS_NORMAL;
+vertex_out float IO_TESS_CURVATURE;
 #endif
 
 #if !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
@@ -122,6 +128,7 @@ void VERTEX_SETUP_OUTPUT()
     IO_ID = ID;
     IO_TESS_STRENGTH = TESS_STRENGTH;
     IO_TESS_NORMAL = TESS_NORMAL;
+    IO_TESS_CURVATURE = TESS_CURVATURE;
 
     // Per-vertex barycentric coordinates for wireframe rendering.
     // Vertices cycle in groups of 3 for GL_TRIANGLES.
