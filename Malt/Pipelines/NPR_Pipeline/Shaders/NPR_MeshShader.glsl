@@ -50,6 +50,16 @@ void COMMON_VERTEX_SHADER(inout Vertex V);
 void COMMON_VERTEX_SHADER(inout Vertex V){}
 #endif
 
+/* META
+    @strength: default=0.75; min=0.0; max=1.0; doc=Amount of Phong displacement (0=flat, 1=full curvature);
+    @normal: default_initialization=NORMAL; doc=Normal used for displacement projection. Override with a smooth normal to fix sharp edge gaps.;
+*/
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal);
+
+#ifndef CUSTOM_TESSELLATION
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal){}
+#endif
+
 vec3 VERTEX_DISPLACEMENT_SHADER();
 
 vec3 VERTEX_DISPLACEMENT_WRAPPER(Vertex V)
@@ -137,12 +147,65 @@ void main()
         }
     }
     #endif
-    
+
+    TESS_STRENGTH = 0.75;
+    TESS_NORMAL = NORMAL;
+    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL);
+
     VERTEX_SETUP_OUTPUT();
 }
 #endif //NDEF CUSTOM_MAIN
 
 #endif //VERTEX_SHADER
+
+#ifdef TESS_CONTROL_SHADER
+#ifdef CUSTOM_TESSELLATION
+
+uniform float TESS_MAX_LEVEL = 4.0;
+
+void main()
+{
+    TCS_PASSTHROUGH();
+
+    if (gl_InvocationID == 0)
+    {
+        // Read density from SSBO for each corner.
+        float d0 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[0]].x : 1.0;
+        float d1 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[1]].x : 1.0;
+        float d2 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[2]].x : 1.0;
+
+        // Per-edge level = average of endpoint densities * max level.
+        // Outer[0] is the edge opposite vertex 0 (edge 1-2), etc.
+        gl_TessLevelOuter[0] = max(1.0, mix(d1, d2, 0.5) * TESS_MAX_LEVEL);
+        gl_TessLevelOuter[1] = max(1.0, mix(d2, d0, 0.5) * TESS_MAX_LEVEL);
+        gl_TessLevelOuter[2] = max(1.0, mix(d0, d1, 0.5) * TESS_MAX_LEVEL);
+        gl_TessLevelInner[0] = max(1.0, (d0 + d1 + d2) / 3.0 * TESS_MAX_LEVEL);
+    }
+}
+
+#endif // CUSTOM_TESSELLATION
+#endif // TESS_CONTROL_SHADER
+
+#ifdef TESS_EVAL_SHADER
+#ifdef CUSTOM_TESSELLATION
+
+void main()
+{
+    TES_INTERPOLATE_ALL();
+
+    // Phong tessellation displacement using per-vertex strength and normal.
+    IO_POSITION = phong_tessellate(
+        IO_POSITION,
+        TCS_POSITION[0], TCS_POSITION[1], TCS_POSITION[2],
+        TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2],
+        IO_TESS_STRENGTH
+    );
+
+    gl_Position = PROJECTION * CAMERA * vec4(IO_POSITION, 1.0);
+}
+
+#endif // CUSTOM_TESSELLATION
+#endif // TESS_EVAL_SHADER
 
 #ifdef PIXEL_SHADER
 
@@ -290,5 +353,7 @@ void main()
 
 #endif //PIXEL_SHADER
 
+#if !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 #include "NPR_Pipeline/NPR_Mesh.glsl"
 #include "NPR_Pipeline/NPR_Shading2.glsl"
+#endif

@@ -168,7 +168,12 @@ class MaltIONode(bpy.types.Node, MaltNode):
         if custom_outputs != '':
             try: io_wrap = graph_io.io_wrap
             except: io_wrap = ''
-            src += transpiler.preprocessor_wrap(io_wrap, custom_outputs)
+            wrapped = transpiler.preprocessor_wrap(io_wrap, custom_outputs)
+            # Also guard by shader stage so output declarations don't appear in TCS/TES.
+            stage = getattr(graph_io, 'shader_type', None)
+            if stage:
+                wrapped = transpiler.preprocessor_wrap(stage, wrapped)
+            src += wrapped
         return src
     
     def draw_buttons(self, context, layout):

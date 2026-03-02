@@ -6,18 +6,31 @@ from Malt.Utils import LOG
 
 class Shader():
 
-    def __init__(self, vertex_source, pixel_source):
+    def __init__(self, vertex_source, pixel_source, tess_control_source=None, tess_eval_source=None):
         if vertex_source and pixel_source:
             self.vertex_source = vertex_source
             self.pixel_source = pixel_source
-            self.program, self.error = compile_gl_program(vertex_source, pixel_source)
+            self.tess_control_source = tess_control_source
+            self.tess_eval_source = tess_eval_source
+            # Detect tessellation: TES source contains a main() only when active.
+            self.has_tessellation = (tess_eval_source is not None and
+                                     'void main' in tess_eval_source)
+            tcs = tess_control_source if self.has_tessellation else None
+            tes = tess_eval_source if self.has_tessellation else None
+            self.program, self.error = compile_gl_program(vertex_source, pixel_source, tcs, tes)
             self.validator = glslang_validator(vertex_source,'vert')
             self.validator += glslang_validator(pixel_source,'frag')
+            if self.has_tessellation:
+                self.validator += glslang_validator(tcs, 'tesc')
+                self.validator += glslang_validator(tes, 'tese')
             if self.validator == '':
                 self.validator = None
         else:
             self.vertex_source = vertex_source
             self.pixel_source = pixel_source
+            self.tess_control_source = None
+            self.tess_eval_source = None
+            self.has_tessellation = False
             self.program = None
             self.error = 'NO SOURCE'
             self.validator = None
@@ -61,6 +74,9 @@ class Shader():
         new = Shader(None, None)
         new.vertex_source = self.vertex_source
         new.pixel_source = self.pixel_source
+        new.tess_control_source = self.tess_control_source
+        new.tess_eval_source = self.tess_eval_source
+        new.has_tessellation = self.has_tessellation
         new.program = self.program
         new.error = self.error
         for name, uniform in self.uniforms.items():
@@ -202,7 +218,9 @@ def shader_preprocessor(shader_source, include_directories=[], definitions=[]):
 
     if hasGLExtension('GL_ARB_bindless_texture'):
         definitions.append('GL_ARB_bindless_texture')
-    
+    if hasGLExtension('GL_NV_fragment_shader_barycentric'):
+        definitions.append('_HAS_BARY_EXT')
+
     shader_source = shader_source + '\n'
     tmp = tempfile.NamedTemporaryFile(delete=False)
     tmp.write(shader_source.encode('utf-8'))
@@ -315,8 +333,8 @@ def fix_line_directive_paths(source):
     return result
 
 
-def compile_gl_program(vertex, fragment):
-    def finalize_source(source):
+def compile_gl_program(vertex, fragment, tess_control=None, tess_eval=None):
+    def finalize_source(source, stage=None):
         bindless_setup = '''
         #define OPTIONALLY_BINDLESS
         '''
@@ -325,22 +343,34 @@ def compile_gl_program(vertex, fragment):
             #extension GL_ARB_bindless_texture : enable
             #define OPTIONALLY_BINDLESS layout(bindless_sampler)
             '''
+        bary_setup = ''
+        if stage == 'fragment' and hasGLExtension('GL_NV_fragment_shader_barycentric'):
+            bary_setup = '''
+            #extension GL_NV_fragment_shader_barycentric : enable
+            #define _HAS_BARY_EXT
+            #define _BARY_COORDS gl_BaryCoordNV
+            '''
         import textwrap
         source = textwrap.dedent(f'''
         #version 450 core
         #extension GL_ARB_shading_language_include : enable
         {bindless_setup}
+        {bary_setup}
         #line 1 "src"
         ''') + source
         return fix_line_directive_paths(source)
-    
-    vertex = finalize_source(vertex)
-    fragment = finalize_source(fragment)
+
+    vertex = finalize_source(vertex, 'vertex')
+    fragment = finalize_source(fragment, 'fragment')
+    if tess_control:
+        tess_control = finalize_source(tess_control)
+    if tess_eval:
+        tess_eval = finalize_source(tess_eval)
 
     status = gl_buffer(GL_INT,1)
     info_log = gl_buffer(GL_BYTE, 1024)
 
-    hash_src = vertex + fragment
+    hash_src = vertex + fragment + (tess_control or '') + (tess_eval or '')
     ''.splitlines()
     hash_src = ''.join([line for line in hash_src.splitlines(True) if line.startswith('#line') == False])
     import hashlib, tempfile
@@ -359,7 +389,7 @@ def compile_gl_program(vertex, fragment):
         Path(format_path).touch()
         with open(format_path, 'rb') as f:
             format = GLuint.from_buffer_copy(f.read())
-    
+
     program = glCreateProgram()
     error = ""
 
@@ -383,18 +413,28 @@ def compile_gl_program(vertex, fragment):
             info_log = glGetShaderInfoLog(shader)
             nonlocal error
             error += 'SHADER COMPILER ERROR :\n' + buffer_to_string(info_log)
-        
+
         return shader
 
     vertex_shader = compile_shader(vertex, GL_VERTEX_SHADER)
     fragment_shader = compile_shader(fragment, GL_FRAGMENT_SHADER)
+    tcs_shader = compile_shader(tess_control, GL_TESS_CONTROL_SHADER) if tess_control else None
+    tes_shader = compile_shader(tess_eval, GL_TESS_EVALUATION_SHADER) if tess_eval else None
 
     glAttachShader(program, vertex_shader)
+    if tcs_shader:
+        glAttachShader(program, tcs_shader)
+    if tes_shader:
+        glAttachShader(program, tes_shader)
     glAttachShader(program, fragment_shader)
     glLinkProgram(program)
 
     glDeleteShader(vertex_shader)
     glDeleteShader(fragment_shader)
+    if tcs_shader:
+        glDeleteShader(tcs_shader)
+    if tes_shader:
+        glDeleteShader(tes_shader)
     
     glGetProgramiv(program, GL_LINK_STATUS, status)
     if status[0] == GL_FALSE:

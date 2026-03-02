@@ -16,6 +16,7 @@
 #include "Node Utils 2/Parameters.glsl"
 #include "Node Utils 2/Texturing.glsl"
 #include "Node Utils 2/Filter.glsl"
+#include "Node Utils 2/Wireframe.glsl"
 
 // Basic common API
 #include "Common.glsl"

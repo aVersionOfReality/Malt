@@ -154,25 +154,33 @@ class GLSLPipelineGraph(PipelineGraph):
         code += '\n\n' + parameters['GLOBAL'] + '\n\n'
         for graph_io in self.graph_io.values():
             if graph_io.name in parameters.keys():
+                sig = graph_io.signature
+                body = parameters[graph_io.name]
                 code += GLSLTranspiler.preprocessor_wrap(graph_io.shader_type,
-                '{}\n{{\n{}\n}}'.format(graph_io.signature, textwrap.indent(parameters[graph_io.name],'\t')))
+                '{}\n{{\n{}\n}}'.format(sig, textwrap.indent(body,'\t')))
         code += '\n\n'
         return code
-    
+
     def compile_material(self, source, include_paths=[]):
         def preprocess(params):
             return self.preprocess_shader_from_source(*params)
-        
+
         params = []
         for shader in self.shaders:
             params.append((source, include_paths, [shader, 'VERTEX_SHADER']))
+            params.append((source, include_paths, [shader, 'TESS_CONTROL_SHADER']))
+            params.append((source, include_paths, [shader, 'TESS_EVAL_SHADER']))
             params.append((source, include_paths, [shader, 'PIXEL_SHADER']))
         preprocessed = self.pool.map(preprocess, params)
 
         from Malt.GL.Shader import Shader
         shaders = {}
         for shader in self.shaders:
-            shaders[shader] = Shader(preprocessed.pop(0), preprocessed.pop(0))
+            vertex = preprocessed.pop(0)
+            tess_control = preprocessed.pop(0)
+            tess_eval = preprocessed.pop(0)
+            pixel = preprocessed.pop(0)
+            shaders[shader] = Shader(vertex, pixel, tess_control, tess_eval)
         return shaders
 
 class PythonGraphIO(PipelineGraphIO):

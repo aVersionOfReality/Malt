@@ -14,8 +14,10 @@ vec3 BITANGENT;
 vec2 UV[4];
 vec4 COLOR[4];
 uvec4 ID;
+float TESS_STRENGTH;
+vec3 TESS_NORMAL;
 
-#ifndef COMPUTE_STAGE
+#if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 vertex_out mat4 MODEL;
 #endif
 
@@ -51,7 +53,7 @@ layout(std140) uniform BATCH_IDS
 };
 #define BATCH_ID(index) BATCH_ID[(index)/4][(index)%4]
 
-#ifndef COMPUTE_STAGE
+#if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 flat vertex_out int IO_VERTEX_ID;
 #endif
 
@@ -69,7 +71,7 @@ layout(std430, binding = 6) buffer SSBO_DATA_6 { vec4 ssbo_data_6[]; };
 layout(std430, binding = 7) buffer SSBO_DATA_7 { vec4 ssbo_data_7[]; };
 #endif
 
-#ifndef COMPUTE_STAGE
+#if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 vertex_out vec3 IO_POSITION;
 vertex_out vec3 IO_NORMAL;
 vertex_out vec3 IO_TANGENT;
@@ -77,8 +79,12 @@ vertex_out vec3 IO_BITANGENT;
 vertex_out vec2 IO_UV[4];
 vertex_out vec4 IO_COLOR[4];
 flat vertex_out uvec4 IO_ID;
+vertex_out vec3 IO_BARYCENTRIC;
+vertex_out float IO_TESS_STRENGTH;
+vertex_out vec3 IO_TESS_NORMAL;
 #endif
 
+#if !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 #include "Common/Color.glsl"
 #include "Common/Hash.glsl"
 #include "Common/Mapping.glsl"
@@ -87,6 +93,7 @@ flat vertex_out uvec4 IO_ID;
 #include "Common/Normal.glsl"
 #include "Common/Quaternion.glsl"
 #include "Common/Transform.glsl"
+#endif
 
 #ifdef VERTEX_SHADER
 
@@ -113,6 +120,17 @@ void VERTEX_SETUP_OUTPUT()
     IO_UV = UV;
     IO_COLOR = COLOR;
     IO_ID = ID;
+    IO_TESS_STRENGTH = TESS_STRENGTH;
+    IO_TESS_NORMAL = TESS_NORMAL;
+
+    // Per-vertex barycentric coordinates for wireframe rendering.
+    // Vertices cycle in groups of 3 for GL_TRIANGLES.
+    int _bary_idx = gl_VertexID % 3;
+    IO_BARYCENTRIC = vec3(
+        float(_bary_idx == 0),
+        float(_bary_idx == 1),
+        float(_bary_idx == 2)
+    );
 }
 
 void DEFAULT_VERTEX_SHADER()
@@ -175,5 +193,9 @@ void PIXEL_SETUP_INPUT()
 }
 
 #endif //PIXEL_SHADER
+
+#if defined(TESS_CONTROL_SHADER) || defined(TESS_EVAL_SHADER)
+#include "Common/Tessellation.glsl"
+#endif
 
 #endif //COMMON_GLSL

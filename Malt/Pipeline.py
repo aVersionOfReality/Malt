@@ -940,12 +940,16 @@ class Pipeline():
             shader = default_shader
             if material and pass_name in material.shader and material.shader[pass_name]:
                 shader = material.shader[pass_name]
-            
+
             for resource in shader_resources.values():
                 resource.shader_callback(shader)
-            
+
             shader.bind()
-            
+
+            _has_tess = getattr(shader, 'has_tessellation', False)
+            if _has_tess:
+                glPatchParameteri(GL_PATCH_VERTICES, 3)
+
             precomputed_tangents_uniform = shader.uniforms.get('PRECOMPUTED_TANGENTS')
             _precomputed_tangents = None
             _scale_group = None
@@ -1009,7 +1013,8 @@ class Pipeline():
                     for batch in batches:
                         batch['BATCH_MODELS'].bind(shader.uniform_blocks['BATCH_MODELS'])
                         batch['BATCH_IDS'].bind(shader.uniform_blocks['BATCH_IDS'])
-                        glDrawElementsInstanced(GL_TRIANGLES, mesh.mesh.index_count, GL_UNSIGNED_INT, NULL, batch['instances_count'])
+                        _primitive = GL_PATCHES if _has_tess else GL_TRIANGLES
+                        glDrawElementsInstanced(_primitive, mesh.mesh.index_count, GL_UNSIGNED_INT, NULL, batch['instances_count'])
 
 
     def render(self, resolution, scene, is_final_render, is_new_frame):

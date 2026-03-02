@@ -19,8 +19,10 @@ _SCREEN_SHADER_HEADER='''
 
 _MESH_SHADER_HEADER='''
 #include "NPR_MeshShader.glsl"
+#if !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
 #include "Node Utils 2/node_utils_2.glsl"
 #include "Node Utils/node_utils.glsl"
+#endif
 '''
 
 _LIGHT_SHADER_HEADER='''
@@ -169,6 +171,11 @@ class NPR_Pipeline(Pipeline):
                 GLSLGraphIO(
                     name='COMMON_VERTEX_SHADER',
                     define='CUSTOM_VERTEX_SHADER',
+                    shader_type='VERTEX_SHADER',
+                ),
+                GLSLGraphIO(
+                    name='TESSELLATION_SETTINGS',
+                    define='CUSTOM_TESSELLATION',
                     shader_type='VERTEX_SHADER',
                 ),
             ]
