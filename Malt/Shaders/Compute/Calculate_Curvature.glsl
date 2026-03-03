@@ -31,6 +31,16 @@ void Calculate_Curvature(vec3 normal, vec3 position, out float result) {}
 
 #else // COMPUTE_STAGE
 
+// Neighbor normal source: when the curvature node's normal input is connected
+// to a smooth barrier output, CURVATURE_USE_SMOOTHED_NORMALS is defined by
+// the code generator and neighbor normals are read from smoothed_normals[].
+// Otherwise, neighbor normals come from normals[] (rest/unsmoothed).
+#ifdef CURVATURE_USE_SMOOTHED_NORMALS
+#define _CURV_NEIGHBOR_NORMALS smoothed_normals
+#else
+#define _CURV_NEIGHBOR_NORMALS normals
+#endif
+
 void Calculate_Curvature(vec3 normal, vec3 position, out float result)
 {
     uint idx = gl_GlobalInvocationID.x;
@@ -49,7 +59,7 @@ void Calculate_Curvature(vec3 normal, vec3 position, out float result)
         int n_corner = vert_corner_index(neighbor_vert, 0);
 
         vec3 n_pos = deformed_positions[n_corner].xyz;
-        vec3 n_nrm = normals[n_corner].xyz;
+        vec3 n_nrm = _CURV_NEIGHBOR_NORMALS[n_corner].xyz;
 
         vec3 edge = n_pos - position;
         float edge_len = length(edge);

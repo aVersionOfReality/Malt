@@ -140,6 +140,16 @@ layout(std430, binding = 23) buffer CURVATURE_DATA {
 };
 #endif // NEEDS_CURVATURE_DATA
 
+// NEEDS_SMOOTHED_NORMALS is defined when the compute graph has a smooth barrier
+// targeting normals.  The smooth kernel writes its output here (binding 24)
+// instead of overwriting normals[] (binding 11), so downstream nodes can read
+// either original or smoothed normals depending on their graph connections.
+#ifdef NEEDS_SMOOTHED_NORMALS
+layout(std430, binding = 24) buffer SMOOTHED_NORMALS {
+    vec4 smoothed_normals[];
+};
+#endif // NEEDS_SMOOTHED_NORMALS
+
 uniform uint LOOP_COUNT = 0u;
 uniform uint VERTEX_COUNT = 0u;
 uniform uint COMPUTE_ITERATIONS = 1u;  // Total iterations — read by Python dispatch loop

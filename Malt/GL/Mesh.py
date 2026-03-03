@@ -128,6 +128,7 @@ class MeshCustomLoad(Mesh):
         self.adjacency_data_ssbo = None
         self.vert_corner_data_ssbo = None
         self.smooth_scratch_ssbo = None
+        self.smoothed_normals_ssbo = None
 
         self.index_count = 0
 

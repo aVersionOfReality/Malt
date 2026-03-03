@@ -260,6 +260,17 @@ class Pipeline():
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             smooth_scratch_ssbo.size = scratch_size
 
+        # Smoothed normals output buffer (written by smooth kernel, read by post-smooth segments).
+        # Keeps normals[] (binding 11) untouched so downstream nodes can read original normals.
+        smoothed_normals_ssbo = None
+        if loop_count > 0:
+            smoothed_normals_ssbo = SSBO()
+            sn_size = loop_count * 16  # vec4 per loop
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, smoothed_normals_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, sn_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            smoothed_normals_ssbo.size = sn_size
+
         # Per-corner weight parameters for smooth kernel (written by barrier node).
         smooth_weights_ssbo = None
         if loop_count > 0:
@@ -336,6 +347,7 @@ class Pipeline():
             result.cotangent_weights_ssbo = cotangent_weights_ssbo
             result.edge_metadata_ssbo = edge_metadata_ssbo
             result.smooth_scratch_ssbo = smooth_scratch_ssbo
+            result.smoothed_normals_ssbo = smoothed_normals_ssbo
             result.smooth_weights_ssbo = smooth_weights_ssbo
             result.bone_indices_ssbo = bone_indices_ssbo
             result.bone_weights_ssbo = bone_weights_ssbo
@@ -554,6 +566,8 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 21, m.bone_weights_ssbo.buffer[0])
         if getattr(m, 'curvature_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 23, m.curvature_ssbo.buffer[0])
+        if getattr(m, 'smoothed_normals_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 24, m.smoothed_normals_ssbo.buffer[0])
 
     def _run_smooth_step(self, m, step, compute_params, workgroups):
         """Run a single Laplacian smooth dispatch step (ping-pong kernel)."""
@@ -619,8 +633,21 @@ class Pipeline():
             smooth_kernel.uniforms['LAST_ITERATION'].set_value(0)
 
         # Select buffer based on smooth target (position or normal).
+        # Normal smoothing writes to the dedicated smoothed_normals SSBO (binding 24)
+        # so that normals[] (binding 11) stays untouched with rest normals.
         smooth_target = step.get('smooth_target', 'position')
-        if smooth_target == 'normal' and m.normal is not None:
+        if smooth_target == 'normal' and getattr(m, 'smoothed_normals_ssbo', None) is not None:
+            buf_a = m.smoothed_normals_ssbo.buffer[0]
+            buf_a_binding = 24
+            # Copy current normals → smoothed_normals as starting point for ping-pong.
+            copy_size = m.smoothed_normals_ssbo.size
+            glBindBuffer(GL_COPY_READ_BUFFER, m.normal[0])
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+            glBindBuffer(GL_COPY_READ_BUFFER, 0)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+        elif smooth_target == 'normal' and m.normal is not None:
+            # Fallback if smoothed_normals_ssbo not allocated (shouldn't happen).
             buf_a = m.normal[0]
             buf_a_binding = 11
         else:
@@ -770,6 +797,7 @@ class Pipeline():
 
             elif step['type'] == 'skin':
                 self._run_skin_step(m, step, compute_params, workgroups)
+
 
     def run_compute_pass(self, scene_batches):
         """Dispatch compute shaders for all meshes that have one assigned.

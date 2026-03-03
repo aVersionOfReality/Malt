@@ -272,6 +272,7 @@ class MaltTree(bpy.types.NodeTree):
         has_barriers = False
         has_curvature = False
         has_smooth_barrier = False
+        has_smooth_normal_barrier = False
         for io_type, (nodes, output) in all_topo_nodes.items():
             for node in nodes:
                 if self._is_barrier_node(node):
@@ -279,6 +280,8 @@ class MaltTree(bpy.types.NodeTree):
                     bmeta = self._get_barrier_meta(node)
                     if bmeta and bmeta.get('smooth_target'):
                         has_smooth_barrier = True
+                        if bmeta.get('smooth_target') == 'normal':
+                            has_smooth_normal_barrier = True
                 ft = getattr(node, 'function_type', '')
                 if 'Calculate_Curvature' in ft or 'Compute_Curvature' in ft:
                     has_curvature = True
@@ -315,6 +318,8 @@ class MaltTree(bpy.types.NodeTree):
                 shader['DEFINES'].append('NEEDS_ADJACENCY_DATA')
             if has_curvature:
                 shader['DEFINES'].append('NEEDS_CURVATURE_DATA')
+            if has_smooth_normal_barrier:
+                shader['DEFINES'].append('NEEDS_SMOOTHED_NORMALS')
 
             self['linked_param_keys'] = list(collect_linked_param_keys())
             self['source'] = pipeline_graph.generate_source(shader)
@@ -411,6 +416,7 @@ class MaltTree(bpy.types.NodeTree):
                 smoothed_vars = set()
                 for barrier in barriers[:seg_idx]:
                     barrier_src = barrier.get_source_name()
+                    barrier_meta = self._get_barrier_meta(barrier)
                     if hasattr(barrier, 'get_function'):
                         bfunc = barrier.get_function()
                         if bfunc:
@@ -418,21 +424,34 @@ class MaltTree(bpy.types.NodeTree):
                                 if param['io'] == 'inout' and param['name'] in ('position', 'normal'):
                                     var_ref = transpiler.parameter_reference(
                                         barrier_src, param['name'], 'inout')
+                                    # Normal-targeting smooth barriers write to smoothed_normals SSBO
+                                    # (binding 24), so read the alias from there instead of the
+                                    # normal variable (which still holds rest normals).
+                                    if (param['name'] == 'normal' and barrier_meta
+                                            and barrier_meta.get('smooth_target') == 'normal'):
+                                        init_value = 'smoothed_normals[gl_GlobalInvocationID.x].xyz'
+                                    else:
+                                        init_value = param['name']
                                     code += transpiler.declaration(
-                                        param['type'], 0, var_ref, param['name'])
+                                        param['type'], 0, var_ref, init_value)
                     # Determine which variable this barrier's kernel smoothed.
                     # Skin barriers write directly to deformed_positions/normals
                     # and the post-skin segment should see those values — no
                     # rest-buffer reset needed.
-                    barrier_meta = self._get_barrier_meta(barrier)
+                    # Normal-targeting smooth barriers write to the separate
+                    # smoothed_normals SSBO, so normals[] is never modified —
+                    # no rest-buffer reset needed for 'normal'.
                     if barrier_meta and not barrier_meta.get('skin'):
                         target = barrier_meta.get('smooth_target', 'position')
-                        smoothed_vars.add(target)
+                        if target != 'normal':
+                            smoothed_vars.add(target)
 
                 # Reset smoothed variables to rest-buffer values so that
                 # Compute Input references see the originals, not the
                 # post-smooth values.  The barrier aliases above already
                 # captured the smoothed result.
+                # Note: 'normal' is excluded when the smooth kernel writes to
+                # smoothed_normals[] — normals[] stays untouched.
                 # Guard with ITERATION == 0 so that multi-iteration segments
                 # only reset on the first pass (later iterations should build
                 # on the previous iteration's output, not the rest pose).
@@ -492,6 +511,25 @@ class MaltTree(bpy.types.NodeTree):
                 seg_defines.append('NEEDS_ADJACENCY_DATA')
             if has_curvature:
                 seg_defines.append('NEEDS_CURVATURE_DATA')
+            if has_smooth_normal_barrier:
+                seg_defines.append('NEEDS_SMOOTHED_NORMALS')
+
+            # Check if any curvature node in this segment reads smoothed normals
+            # (i.e. its normal input is connected to a smooth barrier's output).
+            for node in seg_nodes:
+                ft = getattr(node, 'function_type', '')
+                if 'Calculate_Curvature' not in ft and 'Compute_Curvature' not in ft:
+                    continue
+                if 'normal' in node.inputs:
+                    linked = node.inputs['normal'].get_linked()
+                    if linked is not None:
+                        upstream = linked.node
+                        if self._is_barrier_node(upstream):
+                            bmeta = self._get_barrier_meta(upstream)
+                            if bmeta and bmeta.get('smooth_target') == 'normal':
+                                seg_defines.append('CURVATURE_USE_SMOOTHED_NORMALS')
+                                break
+
             seg_shader = {io_type: code, 'GLOBAL': seg_global, 'DEFINES': seg_defines}
             segment_sources.append(pipeline_graph.generate_source(seg_shader))
 
