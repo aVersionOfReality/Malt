@@ -287,7 +287,6 @@ class MaltTree(bpy.types.NodeTree):
 
         # Adjacency SSBOs (13, 14, 16, 18) needed by curvature nodes AND smooth barrier bodies.
         needs_adjacency = has_curvature or has_smooth_barrier
-
         if not has_barriers:
             # ── Single-segment path (unchanged legacy behavior) ──
             def get_source(output):
@@ -655,22 +654,24 @@ class MaltTree(bpy.types.NodeTree):
             segment_sources = self.get('segment_sources')
             dispatch_plan = self.get('dispatch_plan')
             is_compute = source_path.endswith('.compute.glsl')
+            written_paths = []
             if segment_sources and dispatch_plan and len(segment_sources) > 1:
                 # Multi-segment: write one file per segment.
                 import os, glob as glob_mod
-                written_paths = set()
+                written_norm = set()
                 for step in dispatch_plan:
                     if step['type'] == 'segment':
                         seg_path = step['path']
                         with open(seg_path, 'w') as f:
                             f.write(segment_sources[step['index']])
-                        written_paths.add(os.path.normpath(seg_path))
+                        written_norm.add(os.path.normpath(seg_path))
+                        written_paths.append(seg_path)
                 # Clean up stale segment files from a previous compilation
                 # that had more segments than the current one.
                 if is_compute:
                     base = source_path.replace('.compute.glsl', '_seg*.compute.glsl')
                     for existing in glob_mod.glob(base):
-                        if os.path.normpath(existing) not in written_paths:
+                        if os.path.normpath(existing) not in written_norm:
                             os.remove(existing)
                 # Clean up the single-file path if it exists from a
                 # previous non-barrier compilation.
@@ -680,6 +681,7 @@ class MaltTree(bpy.types.NodeTree):
                 # Single segment: existing behavior.
                 with open(source_path, 'w') as f:
                     f.write(source)
+                written_paths.append(source_path)
                 # Clean up stale segment files from a previous
                 # multi-segment compilation (only relevant for compute shaders).
                 if is_compute:
@@ -691,7 +693,8 @@ class MaltTree(bpy.types.NodeTree):
             if force_track_shader_changes:
                 from BlenderMalt import MaltMaterial
                 if is_compute:
-                    MaltMaterial.track_compute_shader_changes()
+                    MaltMaterial.track_compute_shader_changes(
+                        force_paths=written_paths)
                 else:
                     MaltMaterial.track_shader_changes()
         except:

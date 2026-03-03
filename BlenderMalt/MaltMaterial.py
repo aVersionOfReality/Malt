@@ -249,7 +249,7 @@ def track_shader_changes(force_update=False, async_compilation=True):
 _COMPUTE_MATERIALS = {}
 __COMPUTE_TIMESTAMP = time.time()
 
-def track_compute_shader_changes():
+def track_compute_shader_changes(force_paths=None):
     from BlenderMalt import MaltPipeline
     if MaltPipeline.is_malt_active() == False:
         return 1
@@ -260,6 +260,15 @@ def track_compute_shader_changes():
         start_time = time.time()
 
         needs_update = []
+
+        # When called from update_ext() with explicit paths, skip mtime
+        # detection and compile them directly.
+        if force_paths:
+            for p in force_paths:
+                if p and p not in needs_update and os.path.exists(p):
+                    if p not in _COMPUTE_MATERIALS:
+                        _COMPUTE_MATERIALS[p] = None
+                    needs_update.append(p)
 
         def _check_path(p):
             """Add *p* to needs_update if it exists and is newer than the last check."""
