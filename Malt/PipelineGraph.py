@@ -148,6 +148,9 @@ class GLSLPipelineGraph(PipelineGraph):
         for graph_io in self.graph_io.values():
             if graph_io.name in parameters.keys() and graph_io.define:
                 code += '#define {}\n'.format(graph_io.define)
+        # Extra defines injected by the node tree (e.g. NEEDS_ADJACENCY_DATA).
+        for define in parameters.get('DEFINES', []):
+            code += '#define {}\n'.format(define)
         code += '\n\n' + self.default_global_scope + '\n\n'
         for file in self.lib_files:
             code += f'#include "{file}"\n'

@@ -48,6 +48,8 @@ class MaltIONode(bpy.types.Node, MaltNode):
                     parameter['meta']['default_initialization'] = parameter['name']
                 inputs[parameter['name']] = parameter
             if parameter['io'] in ['','in','inout'] and self.is_output == False:
+                if parameter.get('meta', {}).get('output_only'):
+                    continue
                 outputs[parameter['name']] = parameter
         
         for parameter in self.get_custom_parameters():

@@ -36,10 +36,12 @@ void SSBO_Input(int Index, out vec4 Color)
     else if (Index == 1 && SSBO_ACTIVE[1])      Color = ssbo_data_1[li];
     else if (Index == 2 && SSBO_ACTIVE[2])      Color = ssbo_data_2[li];
     else if (Index == 3 && SSBO_ACTIVE[3])      Color = ssbo_data_3[li];
+#ifdef NEEDS_SSBO_DATA_HIGH
     else if (Index == 4 && SSBO_ACTIVE_HIGH[0]) Color = ssbo_data_4[li];
     else if (Index == 5 && SSBO_ACTIVE_HIGH[1]) Color = ssbo_data_5[li];
     else if (Index == 6 && SSBO_ACTIVE_HIGH[2]) Color = ssbo_data_6[li];
     else if (Index == 7 && SSBO_ACTIVE_HIGH[3]) Color = ssbo_data_7[li];
+#endif
 }
 
 #endif // COMPUTE_STAGE

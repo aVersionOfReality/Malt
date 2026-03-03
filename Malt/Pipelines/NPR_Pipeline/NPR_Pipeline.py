@@ -74,12 +74,17 @@ _DEFAULT_COMPUTE_SHADER_SRC = '''\
 // The #ifndef branch provides a stub body so the reflection pass can discover
 // the COMPUTE_SHADER entry-point signature via the GLSLParser (which only reports
 // functions that have a body, not bare forward declarations).
-// position and normal are inout: the Output node exposes them as input sockets.
-// Unconnected sockets pass through the original rest-position / rest-normal values.
+// position and normal are inout: the Output node exposes them as input sockets,
+// and unconnected sockets pass through the original values unchanged.
+// curvature is inout with output_only META: it appears only on the Output node
+// (not on the Input node).  Unconnected sockets pass through the SSBO value unchanged.
+/* META
+    @curvature: output_only=true;
+*/
 #ifndef COMPUTE_STAGE
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal) { }
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature) { }
 #else
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal) { }
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature) { }
 #endif
 '''
 

@@ -288,7 +288,8 @@ def track_compute_shader_changes():
                         _check_path(step['path'])
             else:
                 # Single-segment: check the single file.
-                _check_path(node_tree.get_generated_source_path())
+                path_to_check = node_tree.get_generated_source_path()
+                _check_path(path_to_check)
 
         compiled = {}
         from . import MaltPipeline

@@ -53,12 +53,11 @@ void COMMON_VERTEX_SHADER(inout Vertex V){}
 /* META
     @strength: default=0.75; min=0.0; max=1.0; doc=Amount of Phong displacement (0=flat, 1=full curvature);
     @normal: default_initialization=NORMAL; doc=Normal used for displacement projection. Override with a smooth normal to fix sharp edge gaps.;
-    @curvature: default_initialization=CURVATURE_SSBO_ACTIVE ? curvature_ssbo[IO_VERTEX_ID] : 0.0; doc=Per-vertex curvature from compute shader. Use to scale tessellation strength.;
 */
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float curvature);
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal);
 
 #ifndef CUSTOM_TESSELLATION
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float curvature){}
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal){}
 #endif
 
 vec3 VERTEX_DISPLACEMENT_SHADER();
@@ -151,8 +150,7 @@ void main()
 
     TESS_STRENGTH = 0.75;
     TESS_NORMAL = NORMAL;
-    TESS_CURVATURE = CURVATURE_SSBO_ACTIVE ? curvature_ssbo[IO_VERTEX_ID] : 0.0;
-    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL, TESS_CURVATURE);
+    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL);
 
     VERTEX_SETUP_OUTPUT();
 }

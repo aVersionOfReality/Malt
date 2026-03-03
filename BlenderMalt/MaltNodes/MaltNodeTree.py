@@ -271,14 +271,22 @@ class MaltTree(bpy.types.NodeTree):
         # Check for barrier nodes and curvature nodes in any output's topo list.
         has_barriers = False
         has_curvature = False
+        has_smooth_barrier = False
         for io_type, (nodes, output) in all_topo_nodes.items():
             for node in nodes:
                 if self._is_barrier_node(node):
                     has_barriers = True
-                if getattr(node, 'function_type', '') == 'Compute_Curvature':
+                    bmeta = self._get_barrier_meta(node)
+                    if bmeta and bmeta.get('smooth_target'):
+                        has_smooth_barrier = True
+                ft = getattr(node, 'function_type', '')
+                if 'Calculate_Curvature' in ft or 'Compute_Curvature' in ft:
                     has_curvature = True
             if has_barriers and has_curvature:
                 break
+
+        # Adjacency SSBOs (13, 14, 16, 18) needed by curvature nodes AND smooth barrier bodies.
+        needs_adjacency = has_curvature or has_smooth_barrier
 
         if not has_barriers:
             # ── Single-segment path (unchanged legacy behavior) ──
@@ -302,6 +310,13 @@ class MaltTree(bpy.types.NodeTree):
                 if hasattr(node, 'get_source_global_parameters'):
                     shader['GLOBAL'] += node.get_source_global_parameters(transpiler)
 
+            # Inject SSBO gate defines based on what the graph needs.
+            shader['DEFINES'] = []
+            if needs_adjacency:
+                shader['DEFINES'].append('NEEDS_ADJACENCY_DATA')
+            if has_curvature:
+                shader['DEFINES'].append('NEEDS_CURVATURE_DATA')
+
             self['linked_param_keys'] = list(collect_linked_param_keys())
             self['source'] = pipeline_graph.generate_source(shader)
             # Clear multi-segment data (IDProperties cannot store None)
@@ -310,7 +325,7 @@ class MaltTree(bpy.types.NodeTree):
                     del self[key]
             # No barriers → no special data requirements (except curvature if detected).
             self['compute_requirements'] = {
-                'smooth_data': 1 if has_curvature else 0,
+                'smooth_data': 1 if needs_adjacency else 0,
                 'bone_data': 0,
                 'curvature_data': 1 if has_curvature else 0,
             }
@@ -472,7 +487,13 @@ class MaltTree(bpy.types.NodeTree):
                 if hasattr(node, 'get_source_global_parameters'):
                     seg_global += node.get_source_global_parameters(transpiler)
 
-            seg_shader = {io_type: code, 'GLOBAL': seg_global}
+            # Inject SSBO gate defines for multi-segment too.
+            seg_defines = []
+            if needs_adjacency:
+                seg_defines.append('NEEDS_ADJACENCY_DATA')
+            if has_curvature:
+                seg_defines.append('NEEDS_CURVATURE_DATA')
+            seg_shader = {io_type: code, 'GLOBAL': seg_global, 'DEFINES': seg_defines}
             segment_sources.append(pipeline_graph.generate_source(seg_shader))
 
         # Build the dispatch plan.

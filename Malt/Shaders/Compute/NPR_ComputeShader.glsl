@@ -18,12 +18,12 @@
 //   23   = curvature_ssbo         — loop-indexed float[], per-corner curvature (written by Compute_Curvature node)
 //
 // Every .compute.glsl node tree must implement:
-//   void COMPUTE_SHADER(inout vec3 position, inout vec3 normal)
+//   void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature)
 //
-// main() initialises position from rest_positions and normal from rest_normals on the
-// first iteration (ITERATION == 0), and from deformed_positions/normals on subsequent
-// iterations.  After COMPUTE_SHADER returns, the updated position/normal are written
-// back to deformed_positions/normals.
+// main() initialises position from rest_positions, normal from rest_normals, and
+// curvature from curvature_ssbo on the first iteration (ITERATION == 0), and from
+// deformed_positions/normals/curvature_ssbo on subsequent iterations.
+// After COMPUTE_SHADER returns, the updated values are written back to their SSBOs.
 // Unconnected inout sockets pass through the original values unchanged.
 // Use gl_GlobalInvocationID.x inside COMPUTE_SHADER to get the current loop index.
 //
@@ -48,18 +48,23 @@
 
 layout(local_size_x = 64) in;
 
-// Face-corner attribute SSBOs (bindings 0–7, all domains expanded to loop/face-corner)
+// Face-corner attribute SSBOs (bindings 0–3, always declared)
 layout(std430, binding = 0) buffer SSBO_DATA_0 { vec4 ssbo_data_0[]; };
 layout(std430, binding = 1) buffer SSBO_DATA_1 { vec4 ssbo_data_1[]; };
 layout(std430, binding = 2) buffer SSBO_DATA_2 { vec4 ssbo_data_2[]; };
 layout(std430, binding = 3) buffer SSBO_DATA_3 { vec4 ssbo_data_3[]; };
+
+uniform bvec4 SSBO_ACTIVE = bvec4(false);
+
+// Face-corner attribute SSBOs (bindings 4–7, conditionally declared)
+// Gated by NEEDS_SSBO_DATA_HIGH to stay within GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (16).
+#ifdef NEEDS_SSBO_DATA_HIGH
 layout(std430, binding = 4) buffer SSBO_DATA_4 { vec4 ssbo_data_4[]; };
 layout(std430, binding = 5) buffer SSBO_DATA_5 { vec4 ssbo_data_5[]; };
 layout(std430, binding = 6) buffer SSBO_DATA_6 { vec4 ssbo_data_6[]; };
 layout(std430, binding = 7) buffer SSBO_DATA_7 { vec4 ssbo_data_7[]; };
-
-uniform bvec4 SSBO_ACTIVE = bvec4(false);
 uniform bvec4 SSBO_ACTIVE_HIGH = bvec4(false);
+#endif
 
 // Compute-specific SSBOs (bindings 8–11)
 // vec4 is used for positions and normals (instead of vec3) because std430 gives vec3[]
@@ -89,6 +94,12 @@ layout(std430, binding = 12) readonly buffer REST_NORMALS {
     vec4 rest_normals[];
 };
 
+// ── Conditionally declared SSBOs ──
+// NEEDS_ADJACENCY_DATA is defined by the generated source when the compute
+// graph uses smooth or curvature nodes that require adjacency/weight data.
+// Without it, these SSBOs are omitted to stay within GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (16).
+#ifdef NEEDS_ADJACENCY_DATA
+
 // Per-corner smooth weight parameters (written by barrier node, read by smooth kernel).
 //   .x = application_strength, .y = contribution_strength, .z = own_normal_strength, .w = mix_factor
 layout(std430, binding = 18) buffer SMOOTH_WEIGHTS {
@@ -99,11 +110,6 @@ layout(std430, binding = 18) buffer SMOOTH_WEIGHTS {
 // Used by Laplacian smooth kernel and curvature computation.
 layout(std430, binding = 16) readonly buffer COTANGENT_WEIGHTS {
     float cotangent_weights[];
-};
-
-// Per-corner curvature values written by Compute_Curvature node.
-layout(std430, binding = 23) buffer CURVATURE_DATA {
-    float curvature_ssbo[];
 };
 
 // Packed CSR buffers — each contains [offsets (VERTEX_COUNT+1 ints) | indices (N ints)].
@@ -123,6 +129,17 @@ layout(std430, binding = 14) readonly buffer VERT_CORNER_DATA {
     int vert_corner_data[];
 };
 
+#endif // NEEDS_ADJACENCY_DATA
+
+// NEEDS_CURVATURE_DATA is defined when the compute graph writes to the
+// curvature SSBO (binding 23).  Separate from NEEDS_ADJACENCY_DATA because
+// curvature output can be a simple constant without adjacency traversal.
+#ifdef NEEDS_CURVATURE_DATA
+layout(std430, binding = 23) buffer CURVATURE_DATA {
+    float curvature_ssbo[];
+};
+#endif // NEEDS_CURVATURE_DATA
+
 uniform uint LOOP_COUNT = 0u;
 uniform uint VERTEX_COUNT = 0u;
 uniform uint COMPUTE_ITERATIONS = 1u;  // Total iterations — read by Python dispatch loop
@@ -131,6 +148,7 @@ uniform uint SEGMENT_INDEX = 0u;       // Dispatch plan segment (0 = first; >0 r
 
 // ── Adjacency helper functions ──
 // Use these instead of indexing adjacency_data/vert_corner_data directly.
+#ifdef NEEDS_ADJACENCY_DATA
 
 // Number of edge-connected neighbor vertices for vertex v.
 int adjacency_count(int v) {
@@ -150,15 +168,17 @@ int vert_corner_index(int v, int i) {
     return vert_corner_data[int(VERTEX_COUNT) + 1 + vert_corner_data[v] + i];
 }
 
+#endif // NEEDS_ADJACENCY_DATA
+
 // When the user's compute graph provides an implementation, CUSTOM_COMPUTE_SHADER is
 // defined by generate_source() and the forward declaration below is used (the actual
 // definition comes from the generated .compute.glsl file).  When there is no user
 // graph (e.g. no output node), the fallback no-op definition is used so the shader
 // still links correctly.
 #ifdef CUSTOM_COMPUTE_SHADER
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal);
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature);
 #else
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal) { }
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature) { }
 #endif
 
 void main() {
@@ -166,23 +186,37 @@ void main() {
     if (idx >= LOOP_COUNT) return;
     vec3 position;
     vec3 normal;
+    float curvature;
     if (SEGMENT_INDEX == 0u && ITERATION == 0u) {
         // First segment, first iteration: start from the immutable rest-pose data.
-        position = rest_positions[idx].xyz;
-        normal   = rest_normals[idx].xyz;
+        position  = rest_positions[idx].xyz;
+        normal    = rest_normals[idx].xyz;
+#ifdef NEEDS_CURVATURE_DATA
+        curvature = curvature_ssbo[idx];
+#else
+        curvature = 0.0;
+#endif
     } else {
         // Later segments or later iterations: build on previous output.
-        position = deformed_positions[idx].xyz;
-        normal   = normals[idx].xyz;
+        position  = deformed_positions[idx].xyz;
+        normal    = normals[idx].xyz;
+#ifdef NEEDS_CURVATURE_DATA
+        curvature = curvature_ssbo[idx];
+#else
+        curvature = 0.0;
+#endif
     }
     // COMPUTE_ITERATIONS == 0 means "skip": copy rest→deformed without
     // running the user's node graph.  Python still dispatches once so the
     // buffers are reset to rest pose.
     if (COMPUTE_ITERATIONS > 0u) {
-        COMPUTE_SHADER(position, normal);
+        COMPUTE_SHADER(position, normal, curvature);
     }
     deformed_positions[idx] = vec4(position, 0.0);
     normals[idx]            = vec4(normal,   0.0);
+#ifdef NEEDS_CURVATURE_DATA
+    curvature_ssbo[idx]     = curvature;
+#endif
 }
 
 #else // not COMPUTE_STAGE — reflection/vertex/pixel context
@@ -190,7 +224,7 @@ void main() {
 // Forward declaration for non-compute contexts (e.g. vertex/pixel shader includes).
 // The GLSLParser ignores bare forward declarations, so the stub body that makes
 // COMPUTE_SHADER discoverable lives in _DEFAULT_COMPUTE_SHADER_SRC instead.
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal);
+void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature);
 
 #endif // COMPUTE_STAGE
 

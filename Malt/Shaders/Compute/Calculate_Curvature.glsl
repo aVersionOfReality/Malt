@@ -8,8 +8,9 @@
 // when disconnected, but can be overridden (e.g. with smooth normals from a
 // barrier alias).
 //
-// The computed curvature is written to a dedicated SSBO (binding 23) so the
-// mesh shader can read it independently via the Compute Curvature Input node.
+// Connect the Curvature output to the Compute Shader output node's Curvature
+// input to write the result to the curvature SSBO (binding 23), which the
+// mesh shader reads via the Compute Curvature Input node.
 
 #ifndef COMPUTE_CURVATURE_GLSL
 #define COMPUTE_CURVATURE_GLSL
@@ -21,16 +22,16 @@
 #ifndef COMPUTE_STAGE
 
 /*  META
-    @meta: label=Compute Curvature;
+    @meta: label=Calculate Curvature;
     @normal: default_initialization=normal;
     @position: default_initialization=position;
     @result: label=Curvature;
 */
-void Compute_Curvature(vec3 normal, vec3 position, out float result) {}
+void Calculate_Curvature(vec3 normal, vec3 position, out float result) {}
 
 #else // COMPUTE_STAGE
 
-void Compute_Curvature(vec3 normal, vec3 position, out float result)
+void Calculate_Curvature(vec3 normal, vec3 position, out float result)
 {
     uint idx = gl_GlobalInvocationID.x;
     int vert = corner_vert[idx];
@@ -61,9 +62,6 @@ void Compute_Curvature(vec3 normal, vec3 position, out float result)
     }
 
     result = (weight_sum > 1e-8) ? curvature_sum / weight_sum : 0.0;
-
-    // Write to dedicated curvature SSBO for mesh shader access.
-    curvature_ssbo[idx] = result;
 }
 
 #endif // COMPUTE_STAGE

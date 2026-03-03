@@ -296,8 +296,9 @@ class Pipeline():
         if loop_count > 0:
             curvature_ssbo = SSBO()
             curvature_size = loop_count * 4  # float per loop
+            zero_data = (ctypes.c_float * loop_count)()
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, curvature_ssbo.buffer[0])
-            glBufferData(GL_SHADER_STORAGE_BUFFER, curvature_size, None, GL_DYNAMIC_DRAW)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, curvature_size, zero_data, GL_DYNAMIC_DRAW)
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             curvature_ssbo.size = curvature_size
 
