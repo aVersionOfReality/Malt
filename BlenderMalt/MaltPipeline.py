@@ -86,7 +86,6 @@ class MaltPipeline(bpy.types.PropertyGroup):
         _PIPELINE_PARAMETERS = params
         
         MaltMaterial.reset_materials()
-        MaltMaterial.reset_compute_materials()
         MaltMeshes.reset_meshes()
         MaltTextures.reset_textures()
         

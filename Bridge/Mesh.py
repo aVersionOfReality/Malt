@@ -22,6 +22,8 @@ def load_mesh(pipeline, msg):
         fan_groups = data.get('fan_groups', None),
         cotangent_weights = data.get('cotangent_weights', None),
         edge_metadata = data.get('edge_metadata', None),
+        laplacian1 = data.get('laplacian1', None),
+        laplacian2 = data.get('laplacian2', None),
         bone_indices = data.get('bone_indices', None),
         bone_weights = data.get('bone_weights', None),
         bone_count = data.get('bone_count', 0),

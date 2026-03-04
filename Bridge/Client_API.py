@@ -178,29 +178,6 @@ class Bridge():
             results[material.path] = material
         return results
 
-    @bridge_method
-    def compile_compute_materials(self, paths, async_compilation=False):
-        for path in paths:
-            self.connections['MAIN'].send({
-                'msg_type': 'COMPUTE_MATERIAL',
-                'path': path,
-            })
-        results = {}
-        received = []
-        if async_compilation == False:
-            while True:
-                completed = True
-                for path in paths:
-                    if path not in received:
-                        completed = False
-                        break
-                if completed:
-                    break
-                msg = self._recv_typed('COMPUTE_MATERIAL')
-                cm = msg['compute_material']
-                results[cm.path] = cm
-                received.append(cm.path)
-        return results
 
     @bridge_method
     def reflect_source_libraries(self, paths):

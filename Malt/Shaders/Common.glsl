@@ -73,6 +73,10 @@ layout(std430, binding = 7) buffer SSBO_DATA_7 { vec4 ssbo_data_7[]; };
 // Per-corner curvature from compute shader (binding 23, read-only in mesh shader).
 layout(std430, binding = 23) readonly buffer CURVATURE_DATA { float curvature_ssbo[]; };
 uniform bool CURVATURE_SSBO_ACTIVE = false;
+
+// Per-corner smoothed normals from compute shader (binding 24, read-only in mesh shader).
+layout(std430, binding = 24) readonly buffer SMOOTHED_NORMALS_DATA { vec4 smoothed_normals_ssbo[]; };
+uniform bool SMOOTHED_NORMALS_SSBO_ACTIVE = false;
 #endif
 
 #if !defined(COMPUTE_STAGE) && !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
@@ -86,6 +90,7 @@ flat vertex_out uvec4 IO_ID;
 vertex_out vec3 IO_BARYCENTRIC;
 vertex_out float IO_TESS_STRENGTH;
 vertex_out vec3 IO_TESS_NORMAL;
+vertex_out vec3 IO_SMOOTHED_NORMAL;
 #endif
 
 #if !defined(TESS_CONTROL_SHADER) && !defined(TESS_EVAL_SHADER)
@@ -126,6 +131,11 @@ void VERTEX_SETUP_OUTPUT()
     IO_ID = ID;
     IO_TESS_STRENGTH = TESS_STRENGTH;
     IO_TESS_NORMAL = TESS_NORMAL;
+
+    // Read smoothed normal from SSBO per-vertex so it interpolates across the triangle.
+    IO_SMOOTHED_NORMAL = SMOOTHED_NORMALS_SSBO_ACTIVE
+        ? transform_normal(MODEL, smoothed_normals_ssbo[gl_VertexID].xyz)
+        : IO_NORMAL;
 
     // Per-vertex barycentric coordinates for wireframe rendering.
     // Vertices cycle in groups of 3 for GL_TRIANGLES.

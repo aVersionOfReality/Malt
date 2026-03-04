@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, fan_groups=None, cotangent_weights=None, edge_metadata=None, bone_indices=None, bone_weights=None, bone_count=0):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, fan_groups=None, cotangent_weights=None, edge_metadata=None, laplacian1=None, laplacian2=None, bone_indices=None, bone_weights=None, bone_count=0):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -271,15 +271,47 @@ class Pipeline():
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             smoothed_normals_ssbo.size = sn_size
 
-        # Per-corner weight parameters for smooth kernel (written by barrier node).
+        # Per-corner weight parameters for smooth kernel (two vec4 SSBOs).
+        # smooth_weights (binding 18): mix, momentum, application
+        # smooth_weights_2 (binding 25): contribution, own_normal
         smooth_weights_ssbo = None
+        smooth_weights_2_ssbo = None
+        smooth_prev_ssbo = None  # Previous iteration buffer for momentum
         if loop_count > 0:
-            smooth_weights_ssbo = SSBO()
             weights_size = loop_count * 16  # vec4 per loop
+            smooth_weights_ssbo = SSBO()
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, smooth_weights_ssbo.buffer[0])
             glBufferData(GL_SHADER_STORAGE_BUFFER, weights_size, None, GL_DYNAMIC_DRAW)
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             smooth_weights_ssbo.size = weights_size
+
+            smooth_weights_2_ssbo = SSBO()
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, smooth_weights_2_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, weights_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            smooth_weights_2_ssbo.size = weights_size
+
+            smooth_prev_ssbo = SSBO()
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, smooth_prev_ssbo.buffer[0])
+            glBufferData(GL_SHADER_STORAGE_BUFFER, weights_size, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            smooth_prev_ssbo.size = weights_size
+
+        # Per-corner laplacian weight attributes (CPU-side copies).
+        # When present, _fill_smooth_weights can read per-corner values from these
+        # instead of broadcasting the uniform value.
+        # laplacian1 maps to smooth_weights (binding 18): mix, momentum, application
+        # laplacian2 maps to smooth_weights_2 (binding 25): contribution, own_normal
+        laplacian1_data = None
+        if laplacian1 is not None:
+            n = loop_count * 4
+            laplacian1_data = (ctypes.c_float * n)()
+            ctypes.memmove(laplacian1_data, laplacian1.buffer(), n * 4)
+        laplacian2_data = None
+        if laplacian2 is not None:
+            n = loop_count * 4
+            laplacian2_data = (ctypes.c_float * n)()
+            ctypes.memmove(laplacian2_data, laplacian2.buffer(), n * 4)
 
         # GPU skinning SSBOs: per-vertex bone indices/weights (static) and
         # per-bone matrices (pre-allocated empty, filled per-frame).
@@ -349,6 +381,10 @@ class Pipeline():
             result.smooth_scratch_ssbo = smooth_scratch_ssbo
             result.smoothed_normals_ssbo = smoothed_normals_ssbo
             result.smooth_weights_ssbo = smooth_weights_ssbo
+            result.smooth_weights_2_ssbo = smooth_weights_2_ssbo
+            result.smooth_prev_ssbo = smooth_prev_ssbo
+            result.laplacian1_data = laplacian1_data
+            result.laplacian2_data = laplacian2_data
             result.bone_indices_ssbo = bone_indices_ssbo
             result.bone_weights_ssbo = bone_weights_ssbo
             result.bone_matrices_ssbo = bone_matrices_ssbo
@@ -522,21 +558,9 @@ class Pipeline():
             Pipeline._skin_kernel = ComputeShader(None)
         return Pipeline._skin_kernel
 
-    def _bind_compute_ssbos(self, m, shader):
-        """Bind mesh attribute and compute-specific SSBOs for a compute shader."""
-        # Face-corner attribute SSBOs (bindings 0–7)
-        ssbo_active = tuple(s is not None for s in m.ssbo_list[:4])
-        ssbo_active_high = tuple(s is not None for s in m.ssbo_list[4:8])
-        if 'SSBO_ACTIVE' in shader.uniforms:
-            shader.uniforms['SSBO_ACTIVE'].set_value(ssbo_active)
-        if 'SSBO_ACTIVE_HIGH' in shader.uniforms:
-            shader.uniforms['SSBO_ACTIVE_HIGH'].set_value(ssbo_active_high)
-
-        for i, ssbo in enumerate(m.ssbo_list):
-            if ssbo is not None:
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo.buffer[0])
-
-        # Compute-specific SSBOs (bindings 8–14)
+    def _bind_compute_ssbos(self, m):
+        """Bind all compute-related SSBOs for the fixed pipeline."""
+        # Core compute SSBOs (bindings 8–14, 16–24)
         if m.rest_position_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m.rest_position_ssbo.buffer[0])
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
@@ -550,123 +574,242 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, m.adjacency_data_ssbo.buffer[0])
         if m.vert_corner_data_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 14, m.vert_corner_data_ssbo.buffer[0])
+        if m.smooth_scratch_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, m.smooth_scratch_ssbo.buffer[0])
         if m.cotangent_weights_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 16, m.cotangent_weights_ssbo.buffer[0])
         if m.edge_metadata_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 17, m.edge_metadata_ssbo.buffer[0])
         if m.smooth_weights_ssbo is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 18, m.smooth_weights_ssbo.buffer[0])
-        if m.fan_groups_ssbo is not None:
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 22, m.fan_groups_ssbo.buffer[0])
         if getattr(m, 'bone_matrices_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, m.bone_matrices_ssbo.buffer[0])
         if getattr(m, 'bone_indices_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 20, m.bone_indices_ssbo.buffer[0])
         if getattr(m, 'bone_weights_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 21, m.bone_weights_ssbo.buffer[0])
+        if m.fan_groups_ssbo is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 22, m.fan_groups_ssbo.buffer[0])
         if getattr(m, 'curvature_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 23, m.curvature_ssbo.buffer[0])
         if getattr(m, 'smoothed_normals_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 24, m.smoothed_normals_ssbo.buffer[0])
+        if getattr(m, 'smooth_weights_2_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 25, m.smooth_weights_2_ssbo.buffer[0])
+        if getattr(m, 'smooth_prev_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 26, m.smooth_prev_ssbo.buffer[0])
 
-    def _run_smooth_step(self, m, step, compute_params, workgroups):
-        """Run a single Laplacian smooth dispatch step (ping-pong kernel)."""
-        # Read smooth params by exact key from the dispatch plan.
-        si = 0
-        iter_key = step.get('iterations_key', '')
-        if iter_key in compute_params:
-            val = compute_params[iter_key]
-            if hasattr(val, '__len__'):
-                val = val[0]
-            if isinstance(val, (int, float)) and val >= 0:
-                si = int(val)
+    def _reset_buffers(self, m):
+        """Reset working buffers from immutable rest buffers via GPU copy."""
+        if m.rest_position_ssbo is not None:
+            copy_size = m.rest_position_ssbo.size
+            glBindBuffer(GL_COPY_READ_BUFFER, m.rest_position_ssbo.buffer[0])
+            glBindBuffer(GL_COPY_WRITE_BUFFER, m.deformed_position_buffer[0])
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+        if m.rest_normals_ssbo is not None:
+            copy_size = m.rest_normals_ssbo.size
+            glBindBuffer(GL_COPY_READ_BUFFER, m.rest_normals_ssbo.buffer[0])
+            glBindBuffer(GL_COPY_WRITE_BUFFER, m.normal[0])
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+        glBindBuffer(GL_COPY_READ_BUFFER, 0)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
 
-        # Read cotangent factor (0 = uniform weights, 1 = full cotangent weights).
-        cf = 1.0
-        cf_key = step.get('cotangent_factor_key', '')
-        if cf_key in compute_params:
-            val = compute_params[cf_key]
-            if hasattr(val, '__len__'):
-                val = val[0]
-            if isinstance(val, (int, float)):
-                cf = float(val)
+    _curvature_kernel = None
 
-        # Read quad mode (0 = skip diagonals, 1 = include uniform, 2 = virtual triangles).
-        qm = 0
-        qm_key = step.get('quad_mode_key', '')
-        if qm_key in compute_params:
-            val = compute_params[qm_key]
-            if hasattr(val, '__len__'):
-                val = val[0]
-            if isinstance(val, (int, float)):
-                qm = int(val)
+    def _get_curvature_kernel(self):
+        """Lazy-compile the curvature compute kernel (cached on the class)."""
+        if Pipeline._curvature_kernel is not None:
+            return Pipeline._curvature_kernel
+        kernel_path = path.join(SHADER_DIR, 'ComputeKernels', 'Calculate_Curvature_Kernel.glsl')
+        try:
+            with open(kernel_path) as f:
+                source = '#define COMPUTE_STAGE\n' + f.read()
+            Pipeline._curvature_kernel = ComputeShader(source)
+            if Pipeline._curvature_kernel.error:
+                LOG.error(f'CURVATURE KERNEL ERROR: {Pipeline._curvature_kernel.error}')
+        except Exception as e:
+            LOG.error(f'Failed to load curvature kernel: {e}')
+            Pipeline._curvature_kernel = ComputeShader(None)
+        return Pipeline._curvature_kernel
 
-        # Group-based smoothing: enabled when fan group data exists (computed from normals).
-        groups_enabled = (m.fan_groups_ssbo is not None)
+    def _run_curvature_step(self, m, workgroups):
+        """Dispatch the standalone curvature kernel."""
+        curvature_kernel = self._get_curvature_kernel()
+        if curvature_kernel is None or curvature_kernel.error:
+            return False
+
+        if 'LOOP_COUNT' in curvature_kernel.uniforms:
+            curvature_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+        if 'VERTEX_COUNT' in curvature_kernel.uniforms:
+            curvature_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
+
+        curvature_kernel.bind()
+        curvature_kernel.dispatch(workgroups)
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        return True
+
+    def _fill_smooth_weights(self, m, params):
+        """Write smooth weight values to all corners in the two smooth_weights SSBOs.
+
+        SSBO 1 (binding 18, smooth_weights): maps to avr_malt_laplacian1
+          .x = mix_factor,  .y = momentum_factor,  .z = application_strength,  .w = 0
+        SSBO 2 (binding 25, smooth_weights_2): maps to avr_malt_laplacian2
+          .x = contribution_strength,  .y = own_normal_strength,  .z = 0,  .w = 0
+
+        For each channel, use either the uniform value from params or the per-corner
+        value from the laplacian attribute, depending on the use_attr_* toggles.
+        """
+        if m.smooth_weights_ssbo is None:
+            return
+
+        # SSBO 1 channels: mix, momentum, application (indices 0,1,2 in vec4)
+        uniform1 = [
+            params.get('smooth_mix_factor', 1.0),
+            params.get('smooth_momentum_factor', 0.25),
+            params.get('smooth_application_strength', 0.5),
+            0.0,  # unused .w
+        ]
+        use_attr1 = [
+            params.get('use_attr_mix_factor', False),
+            params.get('use_attr_momentum', False),
+            params.get('use_attr_application', False),
+            False,  # .w never from attribute
+        ]
+        attr1 = getattr(m, 'laplacian1_data', None)
+        any_attr1 = any(use_attr1) and attr1 is not None
+
+        # SSBO 2 channels: contribution, own_normal (indices 0,1 in vec4)
+        uniform2 = [
+            params.get('smooth_contribution_strength', 1.0),
+            params.get('smooth_own_normal_strength', 1.0),
+            0.0,  # unused .z
+            0.0,  # unused .w
+        ]
+        use_attr2 = [
+            params.get('use_attr_contribution', False),
+            params.get('use_attr_own_normal', False),
+            False,
+            False,
+        ]
+        attr2 = getattr(m, 'laplacian2_data', None)
+        any_attr2 = any(use_attr2) and attr2 is not None
+
+        if (any(use_attr1) and attr1 is None) or (any(use_attr2) and attr2 is None):
+            if not getattr(self, '_warned_no_laplacian_attr', False):
+                missing = []
+                if any(use_attr1) and attr1 is None:
+                    missing.append('avr_malt_laplacian1')
+                if any(use_attr2) and attr2 is None:
+                    missing.append('avr_malt_laplacian2')
+                print(f"[Pipeline] WARNING: 'Use Attribute' enabled but {', '.join(missing)} "
+                      "data missing on mesh. Falling back to uniform values. "
+                      "Refresh meshes to reload.")
+                self._warned_no_laplacian_attr = True
+
+        n = m.loop_count
+
+        # Fill SSBO 1.
+        buf1 = (ctypes.c_float * (n * 4))()
+        if any_attr1:
+            for i in range(n):
+                for c in range(4):
+                    buf1[i*4+c] = attr1[i*4+c] if use_attr1[c] else uniform1[c]
+        else:
+            for i in range(n):
+                buf1[i*4]   = uniform1[0]
+                buf1[i*4+1] = uniform1[1]
+                buf1[i*4+2] = uniform1[2]
+                buf1[i*4+3] = uniform1[3]
+        m.smooth_weights_ssbo.load_sub_data(ctypes.pointer(buf1), n * 16)
+
+        # Fill SSBO 2.
+        if getattr(m, 'smooth_weights_2_ssbo', None) is not None:
+            buf2 = (ctypes.c_float * (n * 4))()
+            if any_attr2:
+                for i in range(n):
+                    for c in range(4):
+                        buf2[i*4+c] = attr2[i*4+c] if use_attr2[c] else uniform2[c]
+            else:
+                for i in range(n):
+                    buf2[i*4]   = uniform2[0]
+                    buf2[i*4+1] = uniform2[1]
+                    buf2[i*4+2] = uniform2[2]
+                    buf2[i*4+3] = uniform2[3]
+            m.smooth_weights_2_ssbo.load_sub_data(ctypes.pointer(buf2), n * 16)
+
+    def _run_smooth_normals_step(self, m, params, workgroups):
+        """Run Laplacian normal smoothing (ping-pong into smoothed_normals)."""
+        si = int(params.get('smooth_iterations', 10))
+        cf = float(params.get('smooth_cotangent_factor', 1.0))
+        qm = int(params.get('smooth_quad_mode', 0))
+        groups_enabled = params.get('smooth_groups_enabled', True) and (m.fan_groups_ssbo is not None)
 
         if si <= 0 or m.smooth_scratch_ssbo is None:
             return False
+        if getattr(m, 'smoothed_normals_ssbo', None) is None:
+            return False
 
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        self._fill_smooth_weights(m, params)
 
         smooth_kernel = self._get_smooth_kernel()
         if smooth_kernel is None or smooth_kernel.error:
             return False
+
         if 'LOOP_COUNT' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
         if 'VERTEX_COUNT' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
         if 'COTANGENT_FACTOR' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['COTANGENT_FACTOR'].set_value(cf)
-
-        # Group-based smoothing: fan_groups_ssbo bound at 22 by _bind_compute_ssbos.
         if 'GROUPS_ENABLED' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['GROUPS_ENABLED'].set_value(1 if groups_enabled else 0)
-
-        # Quad diagonal handling.
         if 'QUAD_MODE' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['QUAD_MODE'].set_value(qm)
-
-        # LAST_ITERATION: 0 during iterations, 1 on the final iteration to
-        # trigger per-corner mix with rest normals from smooth_weights[].w.
         if 'LAST_ITERATION' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['LAST_ITERATION'].set_value(0)
+        if 'ITERATION_INDEX' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['ITERATION_INDEX'].set_value(0)
 
-        # Select buffer based on smooth target (position or normal).
-        # Normal smoothing writes to the dedicated smoothed_normals SSBO (binding 24)
-        # so that normals[] (binding 11) stays untouched with rest normals.
-        smooth_target = step.get('smooth_target', 'position')
-        if smooth_target == 'normal' and getattr(m, 'smoothed_normals_ssbo', None) is not None:
-            buf_a = m.smoothed_normals_ssbo.buffer[0]
-            buf_a_binding = 24
-            # Copy current normals → smoothed_normals as starting point for ping-pong.
-            copy_size = m.smoothed_normals_ssbo.size
+        # Copy normals[] → smoothed_normals[] as starting point.
+        buf_a = m.smoothed_normals_ssbo.buffer[0]
+        copy_size = m.smoothed_normals_ssbo.size
+        glBindBuffer(GL_COPY_READ_BUFFER, m.normal[0])
+        glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+        glBindBuffer(GL_COPY_READ_BUFFER, 0)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
+        # Also copy normals into smooth_prev for first iteration's momentum baseline.
+        buf_prev = getattr(m, 'smooth_prev_ssbo', None)
+        if buf_prev is not None:
             glBindBuffer(GL_COPY_READ_BUFFER, m.normal[0])
-            glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buf_prev.buffer[0])
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
             glBindBuffer(GL_COPY_READ_BUFFER, 0)
             glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
-        elif smooth_target == 'normal' and m.normal is not None:
-            # Fallback if smoothed_normals_ssbo not allocated (shouldn't happen).
-            buf_a = m.normal[0]
-            buf_a_binding = 11
-        else:
-            buf_a = m.deformed_position_buffer[0]
-            buf_a_binding = 9
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 26, buf_prev.buffer[0])
 
         buf_b = m.smooth_scratch_ssbo.buffer[0]
         for s_iter in range(si):
-            # On the last iteration, signal the kernel to apply per-corner mix.
             if s_iter == si - 1:
                 if 'LAST_ITERATION' in smooth_kernel.uniforms:
                     smooth_kernel.uniforms['LAST_ITERATION'].set_value(1)
+            if 'ITERATION_INDEX' in smooth_kernel.uniforms:
+                smooth_kernel.uniforms['ITERATION_INDEX'].set_value(s_iter)
 
+            # Determine source/dest for this iteration's ping-pong.
             if s_iter % 2 == 0:
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_b)
+                src_buf, dst_buf = buf_a, buf_b
             else:
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_b)
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_a)
+                src_buf, dst_buf = buf_b, buf_a
+
+            # Momentum: bind previous iteration's source to binding 26.
+            # For iter 0, smooth_prev already holds the initial normals.
+            # For iter > 0, smooth_prev holds the source from the previous iteration.
+            # (We snapshot the current source into smooth_prev AFTER dispatch.)
+
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, src_buf)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, dst_buf)
 
             smooth_kernel.bind()
             smooth_kernel.dispatch(workgroups)
@@ -674,12 +817,17 @@ class Pipeline():
             if s_iter < si - 1:
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
-        # Ensure the last smooth dispatch is visible before any subsequent
-        # segment shader reads.
+            # Snapshot current source into smooth_prev for next iteration's momentum.
+            if buf_prev is not None and s_iter < si - 1:
+                glBindBuffer(GL_COPY_READ_BUFFER, src_buf)
+                glBindBuffer(GL_COPY_WRITE_BUFFER, buf_prev.buffer[0])
+                glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
+                glBindBuffer(GL_COPY_READ_BUFFER, 0)
+                glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         if si % 2 == 1:
-            # Odd iteration count: result is in buf_b, copy back to buf_a.
             copy_size = m.smooth_scratch_ssbo.size
             glBindBuffer(GL_COPY_READ_BUFFER, buf_b)
             glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
@@ -687,14 +835,12 @@ class Pipeline():
             glBindBuffer(GL_COPY_READ_BUFFER, 0)
             glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
 
-        # Restore bindings: buf_a back to its home slot, and ensure
-        # binding 9 points to deformed_positions for subsequent shaders.
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, buf_a_binding, buf_a)
-        if buf_a_binding != 9:
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
+        # Restore bindings.
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 24, buf_a)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
         return True
 
-    def _run_skin_step(self, m, step, compute_params, workgroups):
+    def _run_skin_step(self, m, workgroups):
         """Run the LBS skinning kernel (single dispatch)."""
         bone_matrices_ssbo = getattr(m, 'bone_matrices_ssbo', None)
         bone_indices_ssbo = getattr(m, 'bone_indices_ssbo', None)
@@ -703,13 +849,6 @@ class Pipeline():
         if bone_matrices_ssbo is None or bone_indices_ssbo is None or bone_weights_ssbo is None:
             return False
 
-        skin_position = step.get('skin_position', True)
-        skin_normal = step.get('skin_normal', True)
-        if not skin_position and not skin_normal:
-            return True  # nothing to do
-
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
         skin_kernel = self._get_skin_kernel()
         if skin_kernel is None or skin_kernel.error:
             return False
@@ -717,110 +856,20 @@ class Pipeline():
         if 'LOOP_COUNT' in skin_kernel.uniforms:
             skin_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
         if 'SKIN_POSITION' in skin_kernel.uniforms:
-            skin_kernel.uniforms['SKIN_POSITION'].set_value(skin_position)
+            skin_kernel.uniforms['SKIN_POSITION'].set_value(True)
         if 'SKIN_NORMAL' in skin_kernel.uniforms:
-            skin_kernel.uniforms['SKIN_NORMAL'].set_value(skin_normal)
-
-        # Bind bone data SSBOs (rest/deformed/normals/corner_vert already bound
-        # by _bind_compute_ssbos from the preceding segment dispatch).
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, bone_matrices_ssbo.buffer[0])
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 20, bone_indices_ssbo.buffer[0])
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 21, bone_weights_ssbo.buffer[0])
+            skin_kernel.uniforms['SKIN_NORMAL'].set_value(True)
 
         skin_kernel.bind()
         skin_kernel.dispatch(workgroups)
-
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         return True
 
-    def _dispatch_shader_segment(self, m, shader, seg_index, iterations, compute_params, workgroups):
-        """Dispatch a single compute shader segment with iteration support."""
-        if 'LOOP_COUNT' in shader.uniforms:
-            shader.uniforms['LOOP_COUNT'].set_value(m.loop_count)
-        if 'VERTEX_COUNT' in shader.uniforms:
-            shader.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
-        if 'TIME' in shader.uniforms:
-            shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
-        if 'SEGMENT_INDEX' in shader.uniforms:
-            shader.uniforms['SEGMENT_INDEX'].set_value(seg_index)
-
-        for name, value in compute_params.items():
-            if name in shader.uniforms:
-                shader.uniforms[name].set_value(value)
-
-        if 'COMPUTE_ITERATIONS' in shader.uniforms:
-            shader.uniforms['COMPUTE_ITERATIONS'].set_value(iterations)
-
-        self._bind_compute_ssbos(m, shader)
-
-        if iterations == 0:
-            if 'ITERATION' in shader.uniforms:
-                shader.uniforms['ITERATION'].set_value(0)
-            shader.bind()
-            shader.dispatch(workgroups)
-        else:
-            for iteration in range(iterations):
-                if 'ITERATION' in shader.uniforms:
-                    shader.uniforms['ITERATION'].set_value(iteration)
-                shader.bind()
-                shader.dispatch(workgroups)
-                if iteration < iterations - 1:
-                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-    def _run_dispatch_plan(self, m, dispatch_plan, compute_params, workgroups):
-        """Execute a multi-segment dispatch plan step by step."""
-        for step in dispatch_plan:
-            if step['type'] == 'segment':
-                shader = step.get('shader')
-                if shader is None or (hasattr(shader, 'error') and shader.error):
-                    continue
-
-                # Per-segment iteration count.
-                iterations = 1
-                iter_param = step.get('iteration_param')
-                if iter_param:
-                    for pname, pval in compute_params.items():
-                        if iter_param in pname.lower():
-                            val = pval
-                            if hasattr(val, '__len__'):
-                                val = val[0]
-                            if isinstance(val, (int, float)) and val >= 0:
-                                iterations = max(iterations, int(val))
-
-                self._dispatch_shader_segment(
-                    m, shader, step['index'], iterations, compute_params, workgroups)
-
-            elif step['type'] == 'smooth':
-                self._run_smooth_step(m, step, compute_params, workgroups)
-
-            elif step['type'] == 'skin':
-                self._run_skin_step(m, step, compute_params, workgroups)
-
-
     def run_compute_pass(self, scene_batches):
-        """Dispatch compute shaders for all meshes that have one assigned.
+        """Fixed-order compute pipeline: Reset → Skin → Curvature → Smooth.
 
-        Call this before draw_scene_pass().  Safe to call multiple times per
-        frame (e.g. from both do_render and a ComputePass render node) — only
-        the first call per frame actually dispatches; subsequent calls are
-        no-ops.
-
-        Supports two modes:
-        1. Single-shader (legacy): one compute shader dispatched with iterations,
-           followed by Laplacian smooth passes scanned from parameters.
-        2. Multi-segment dispatch plan: when the graph has barrier nodes (e.g.
-           Laplacian Smooth), the graph is split into segments with smooth
-           kernels interleaved between them.
-
-        The memory barrier issued at the end ensures the deformed position
-        buffer writes are visible to the subsequent vertex shader reads via
-        in_position.
+        Call this before draw_scene_pass(). Only dispatches once per frame.
         """
-        # Compute results are deterministic and independent of sample jitter,
-        # so only dispatch once per frame.  The flag is reset by do_render()
-        # when is_new_frame is True.
         if getattr(self, '_compute_dispatched_this_frame', False):
             return
 
@@ -832,136 +881,40 @@ class Pipeline():
                 if not hasattr(m, 'deformed_position_buffer') or m.deformed_position_buffer is None:
                     continue
 
-                compute_shader = getattr(m, 'compute_shader', None)
-                if compute_shader is None:
+                compute_params = getattr(m, 'compute_params', None)
+                if compute_params is None:
                     continue
 
-                if compute_shader.error:
+                compute_skin = compute_params.get('compute_skin', False)
+                compute_curvature = compute_params.get('compute_curvature', False)
+                compute_smooth = compute_params.get('compute_smooth_normals', False)
+
+                if not compute_skin and not compute_curvature and not compute_smooth:
                     continue
 
-                compute_params = getattr(m, 'compute_shader_parameters', {})
                 workgroup_size = 64
                 workgroups = math.ceil(m.loop_count / workgroup_size)
 
-                # ── Multi-segment dispatch plan ──
-                dispatch_plan = getattr(m, 'dispatch_plan', None)
-                if dispatch_plan is not None:
-                    self._run_dispatch_plan(m, dispatch_plan, compute_params, workgroups)
+                # 1. Reset working buffers from rest buffers.
+                self._reset_buffers(m)
+
+                # Bind all SSBOs for the compute pipeline.
+                self._bind_compute_ssbos(m)
+
+                # 2. Skinning (transforms positions + normals in-place).
+                if compute_skin:
+                    self._run_skin_step(m, workgroups)
                     any_dispatched = True
-                    continue
 
-                # ── Single-shader legacy path ──
-                if 'LOOP_COUNT' in compute_shader.uniforms:
-                    compute_shader.uniforms['LOOP_COUNT'].set_value(m.loop_count)
-                if 'VERTEX_COUNT' in compute_shader.uniforms:
-                    compute_shader.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
-                if 'TIME' in compute_shader.uniforms:
-                    compute_shader.uniforms['TIME'].set_value(self.common_buffer.data.TIME)
-
-                for name, value in compute_params.items():
-                    if name in compute_shader.uniforms:
-                        compute_shader.uniforms[name].set_value(value)
-
-                self._bind_compute_ssbos(m, compute_shader)
-
-                # Determine iteration count.
-                iterations = 1
-                for pname, pval in compute_params.items():
-                    if 'compute_iterations' in pname.lower():
-                        val = pval
-                        if hasattr(val, '__len__'):
-                            val = val[0]
-                        if isinstance(val, (int, float)) and val >= 0:
-                            iterations = max(iterations, int(val))
-
-                if 'COMPUTE_ITERATIONS' in compute_shader.uniforms:
-                    compute_shader.uniforms['COMPUTE_ITERATIONS'].set_value(iterations)
-
-                if iterations == 0:
-                    if 'ITERATION' in compute_shader.uniforms:
-                        compute_shader.uniforms['ITERATION'].set_value(0)
-                    compute_shader.bind()
-                    compute_shader.dispatch(workgroups)
+                # 3. Curvature (reads posed normals + positions → curvature_ssbo).
+                if compute_curvature:
+                    self._run_curvature_step(m, workgroups)
                     any_dispatched = True
-                else:
-                    for iteration in range(iterations):
-                        if 'ITERATION' in compute_shader.uniforms:
-                            compute_shader.uniforms['ITERATION'].set_value(iteration)
-                        compute_shader.bind()
-                        compute_shader.dispatch(workgroups)
-                        any_dispatched = True
-                        if iteration < iterations - 1:
-                            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
-                # ── Laplacian smooth passes (legacy: after graph dispatch) ──
-                smooth_steps = {}
-                for pname, pval in compute_params.items():
-                    key = pname.lower()
-                    if 'smooth_iterations' not in key and 'smooth_strength' not in key:
-                        continue
-                    parts = key.rsplit('_0_', 1)
-                    if len(parts) != 2:
-                        continue
-                    prefix, param = parts
-                    if prefix not in smooth_steps:
-                        smooth_steps[prefix] = {'iterations': 0, 'strength': 0.5}
-                    val = pval
-                    if hasattr(val, '__len__'):
-                        val = val[0]
-                    if param == 'smooth_iterations':
-                        if isinstance(val, (int, float)) and val >= 0:
-                            smooth_steps[prefix]['iterations'] = int(val)
-                    elif param == 'smooth_strength':
-                        if isinstance(val, (int, float)):
-                            smooth_steps[prefix]['strength'] = float(val)
-
-                for step in smooth_steps.values():
-                    si = step['iterations']
-                    ss = step['strength']
-                    if si <= 0:
-                        continue
-                    if m.smooth_scratch_ssbo is None:
-                        continue
-
-                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-                    smooth_kernel = self._get_smooth_kernel()
-                    if smooth_kernel is None or smooth_kernel.error:
-                        continue
-                    if 'LOOP_COUNT' in smooth_kernel.uniforms:
-                        smooth_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
-                    if 'VERTEX_COUNT' in smooth_kernel.uniforms:
-                        smooth_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
-                    if 'SMOOTH_STRENGTH' in smooth_kernel.uniforms:
-                        smooth_kernel.uniforms['SMOOTH_STRENGTH'].set_value(ss)
-
-                    buf_a = m.deformed_position_buffer[0]
-                    buf_b = m.smooth_scratch_ssbo.buffer[0]
-                    for s_iter in range(si):
-                        if s_iter % 2 == 0:
-                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
-                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_b)
-                        else:
-                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_b)
-                            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, buf_a)
-
-                        smooth_kernel.bind()
-                        smooth_kernel.dispatch(workgroups)
-                        any_dispatched = True
-
-                        if s_iter < si - 1:
-                            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-                    if si % 2 == 1:
-                        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-                        copy_size = m.smooth_scratch_ssbo.size
-                        glBindBuffer(GL_COPY_READ_BUFFER, buf_b)
-                        glBindBuffer(GL_COPY_WRITE_BUFFER, buf_a)
-                        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, copy_size)
-                        glBindBuffer(GL_COPY_READ_BUFFER, 0)
-                        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
-
-                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, buf_a)
+                # 4. Smooth normals (reads posed normals → smoothed_normals).
+                if compute_smooth:
+                    self._run_smooth_normals_step(m, compute_params, workgroups)
+                    any_dispatched = True
 
         if any_dispatched:
             glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT)
@@ -1047,6 +1000,24 @@ class Pipeline():
                 if 'CURVATURE_SSBO_ACTIVE' in shader.uniforms:
                     shader.uniforms['CURVATURE_SSBO_ACTIVE'].bind(has_curvature)
 
+                smoothed_normals_ssbo = getattr(mesh.mesh, 'smoothed_normals_ssbo', None)
+                has_smoothed_normals = smoothed_normals_ssbo is not None
+                if has_smoothed_normals:
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 24, smoothed_normals_ssbo.buffer[0])
+                if 'SMOOTHED_NORMALS_SSBO_ACTIVE' in shader.uniforms:
+                    shader.uniforms['SMOOTHED_NORMALS_SSBO_ACTIVE'].bind(has_smoothed_normals)
+
+                # If the shader has tessellation stages, we MUST use GL_PATCHES
+                # (GL_TRIANGLES is an invalid operation with TCS/TES present).
+                # The mesh toggle controls tessellation levels via a uniform
+                # instead of switching the primitive type.
+                _primitive = GL_PATCHES if _has_tess else GL_TRIANGLES
+
+                cp = getattr(mesh.mesh, 'compute_params', None)
+                mesh_tess = cp.get('tessellation_enabled', False) if cp else False
+                if 'TESS_DISABLED' in shader.uniforms:
+                    shader.uniforms['TESS_DISABLED'].bind(0 if mesh_tess else 1)
+
                 for scale_group, batches in meshes[mesh].items():
                     if scale_group != _scale_group:
                         _scale_group = scale_group
@@ -1058,11 +1029,10 @@ class Pipeline():
                             glFrontFace(GL_CW)
                             if 'MIRROR_SCALE' in shader.uniforms:
                                 shader.uniforms['MIRROR_SCALE'].bind(True)
-                
+
                     for batch in batches:
                         batch['BATCH_MODELS'].bind(shader.uniform_blocks['BATCH_MODELS'])
                         batch['BATCH_IDS'].bind(shader.uniform_blocks['BATCH_IDS'])
-                        _primitive = GL_PATCHES if _has_tess else GL_TRIANGLES
                         glDrawElementsInstanced(_primitive, mesh.mesh.index_count, GL_UNSIGNED_INT, NULL, batch['instances_count'])
 
 

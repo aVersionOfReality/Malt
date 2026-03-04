@@ -192,6 +192,15 @@ void Compute_Curvature_Input(out float result)
     result = CURVATURE_SSBO_ACTIVE ? curvature_ssbo[IO_VERTEX_ID] : 0.0;
 }
 
+/*  META
+    @meta: label=Compute Smoothed Normals;
+    @result: subtype=Normal; label=Smoothed Normal;
+*/
+void Compute_Smoothed_Normals_Input(out vec3 result)
+{
+    result = SMOOTHED_NORMALS_SSBO_ACTIVE ? normalize(IO_SMOOTHED_NORMAL) : NORMAL;
+}
+
 #ifndef NO_ID_INPUT
 
 /*  META

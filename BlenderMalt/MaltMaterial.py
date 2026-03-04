@@ -185,11 +185,6 @@ def reset_materials():
     global _MATERIALS
     _MATERIALS = {}
 
-def reset_compute_materials():
-    global _COMPUTE_MATERIALS, __COMPUTE_TIMESTAMP
-    _COMPUTE_MATERIALS = {}
-    __COMPUTE_TIMESTAMP = 0
-
 import time
 __TIMESTAMP = time.time()
 
@@ -246,94 +241,15 @@ def track_shader_changes(force_update=False, async_compilation=True):
     return 0.1 #Track again in 0.1 second
     
 
-_COMPUTE_MATERIALS = {}
-__COMPUTE_TIMESTAMP = time.time()
-
-def track_compute_shader_changes(force_paths=None):
-    from BlenderMalt import MaltPipeline
-    if MaltPipeline.is_malt_active() == False:
-        return 1
-
-    global __COMPUTE_TIMESTAMP
-    global _COMPUTE_MATERIALS
-    try:
-        start_time = time.time()
-
-        needs_update = []
-
-        # When called from update_ext() with explicit paths, skip mtime
-        # detection and compile them directly.
-        if force_paths:
-            for p in force_paths:
-                if p and p not in needs_update and os.path.exists(p):
-                    if p not in _COMPUTE_MATERIALS:
-                        _COMPUTE_MATERIALS[p] = None
-                    needs_update.append(p)
-
-        def _check_path(p):
-            """Add *p* to needs_update if it exists and is newer than the last check."""
-            if p and p not in needs_update and os.path.exists(p):
-                stats = os.stat(p)
-                if p not in _COMPUTE_MATERIALS or stats.st_mtime > __COMPUTE_TIMESTAMP:
-                    if p not in _COMPUTE_MATERIALS:
-                        _COMPUTE_MATERIALS[p] = None
-                    needs_update.append(p)
-
-        for mesh in bpy.data.meshes:
-            tree_name = getattr(mesh, 'malt_compute_nodes', '')
-            if not tree_name:
-                continue
-            node_tree = bpy.data.node_groups.get(tree_name)
-            if node_tree is None:
-                continue
-            if not hasattr(node_tree, 'get_generated_source_path'):
-                continue
-
-            dispatch_plan = node_tree.get('dispatch_plan') if hasattr(node_tree, 'get') else None
-            if dispatch_plan:
-                # Multi-segment: check each segment file.
-                for step in dispatch_plan:
-                    if step['type'] == 'segment':
-                        _check_path(step['path'])
-            else:
-                # Single-segment: check the single file.
-                path_to_check = node_tree.get_generated_source_path()
-                _check_path(path_to_check)
-
-        compiled = {}
-        from . import MaltPipeline
-        if len(needs_update) > 0:
-            for _p in needs_update:
-                print(f'COMPUTE SHADER RECOMPILING: {os.path.basename(_p)}')
-            compiled = MaltPipeline.get_bridge().compile_compute_materials(needs_update)
-
-        if compiled:
-            for key, value in compiled.items():
-                _COMPUTE_MATERIALS[key] = value
-            from BlenderMalt import MaltRenderEngine as _MRE
-            _MRE.NEEDS_RERENDER = True
-            for screen in bpy.data.screens:
-                for area in screen.areas:
-                    area.tag_redraw()
-
-        __COMPUTE_TIMESTAMP = start_time
-    except:
-        import traceback
-        traceback.print_exc()
-    return 0.1
-
-
 def register():
     for _class in classes: bpy.utils.register_class(_class)
     bpy.types.Material.malt = bpy.props.PointerProperty(type=MaltMaterial,
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
 
     bpy.app.timers.register(track_shader_changes, persistent=True)
-    bpy.app.timers.register(track_compute_shader_changes, persistent=True)
 
 def unregister():
     for _class in reversed(classes): bpy.utils.unregister_class(_class)
     del bpy.types.Material.malt
 
     bpy.app.timers.unregister(track_shader_changes)
-    bpy.app.timers.unregister(track_compute_shader_changes)

@@ -39,11 +39,9 @@ class OT_MaltRefreshShaders(bpy.types.Operator):
                 if hasattr(tree, 'update_ext'):
                     tree.update_ext(force_track_shader_changes=False, force_update=True)
 
-        # Reset material/compute shader caches and recompile.
+        # Reset material shader caches and recompile.
         MaltMaterial.reset_materials()
-        MaltMaterial.reset_compute_materials()
         MaltMaterial.track_shader_changes(force_update=True)
-        MaltMaterial.track_compute_shader_changes()
 
         for screen in bpy.data.screens:
             for area in screen.areas:

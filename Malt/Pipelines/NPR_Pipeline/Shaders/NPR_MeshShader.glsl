@@ -162,6 +162,7 @@ void main()
 #ifdef CUSTOM_TESSELLATION
 
 uniform float TESS_MAX_LEVEL = 4.0;
+uniform int TESS_DISABLED = 0;  // Set by Pipeline when mesh toggle is off.
 
 void main()
 {
@@ -169,17 +170,28 @@ void main()
 
     if (gl_InvocationID == 0)
     {
-        // Read density from SSBO for each corner.
-        float d0 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[0]].x : 1.0;
-        float d1 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[1]].x : 1.0;
-        float d2 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[2]].x : 1.0;
+        if (TESS_DISABLED != 0)
+        {
+            // Pass-through: no subdivision.
+            gl_TessLevelOuter[0] = 1.0;
+            gl_TessLevelOuter[1] = 1.0;
+            gl_TessLevelOuter[2] = 1.0;
+            gl_TessLevelInner[0] = 1.0;
+        }
+        else
+        {
+            // Read density from SSBO for each corner.
+            float d0 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[0]].x : 1.0;
+            float d1 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[1]].x : 1.0;
+            float d2 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[2]].x : 1.0;
 
-        // Per-edge level = average of endpoint densities * max level.
-        // Outer[0] is the edge opposite vertex 0 (edge 1-2), etc.
-        gl_TessLevelOuter[0] = max(1.0, mix(d1, d2, 0.5) * TESS_MAX_LEVEL);
-        gl_TessLevelOuter[1] = max(1.0, mix(d2, d0, 0.5) * TESS_MAX_LEVEL);
-        gl_TessLevelOuter[2] = max(1.0, mix(d0, d1, 0.5) * TESS_MAX_LEVEL);
-        gl_TessLevelInner[0] = max(1.0, (d0 + d1 + d2) / 3.0 * TESS_MAX_LEVEL);
+            // Per-edge level = average of endpoint densities * max level.
+            // Outer[0] is the edge opposite vertex 0 (edge 1-2), etc.
+            gl_TessLevelOuter[0] = max(1.0, mix(d1, d2, 0.5) * TESS_MAX_LEVEL);
+            gl_TessLevelOuter[1] = max(1.0, mix(d2, d0, 0.5) * TESS_MAX_LEVEL);
+            gl_TessLevelOuter[2] = max(1.0, mix(d0, d1, 0.5) * TESS_MAX_LEVEL);
+            gl_TessLevelInner[0] = max(1.0, (d0 + d1 + d2) / 3.0 * TESS_MAX_LEVEL);
+        }
     }
 }
 

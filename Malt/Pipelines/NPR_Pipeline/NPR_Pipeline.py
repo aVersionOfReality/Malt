@@ -67,27 +67,6 @@ void MAIN_PASS_PIXEL_SHADER()
 
 DEFAULTS_PATH = os.path.join(os.path.dirname(__file__), 'Defaults', 'defaults')
 
-_COMPUTE_SHADER_HEADER = '#include "Compute/NPR_ComputeShader.glsl"\n#include "Node Utils 2/conversion.glsl"\n'
-
-_DEFAULT_COMPUTE_SHADER_SRC = '''\
-// Default no-op compute shader.
-// The #ifndef branch provides a stub body so the reflection pass can discover
-// the COMPUTE_SHADER entry-point signature via the GLSLParser (which only reports
-// functions that have a body, not bare forward declarations).
-// position and normal are inout: the Output node exposes them as input sockets,
-// and unconnected sockets pass through the original values unchanged.
-// curvature is inout with output_only META: it appears only on the Output node
-// (not on the Input node).  Unconnected sockets pass through the SSBO value unchanged.
-/* META
-    @curvature: output_only=true;
-*/
-#ifndef COMPUTE_STAGE
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature) { }
-#else
-void COMPUTE_SHADER(inout vec3 position, inout vec3 normal, inout float curvature) { }
-#endif
-'''
-
 class NPR_Pipeline(Pipeline):
 
     def __init__(self, plugins=[]):
@@ -221,25 +200,6 @@ class NPR_Pipeline(Pipeline):
             ]
         )
         self.add_graph(light)
-
-        compute = ComputePipelineGraph(
-            name='Compute',
-            default_global_scope=_COMPUTE_SHADER_HEADER,
-            default_shader_src=_DEFAULT_COMPUTE_SHADER_SRC,
-            graph_io=[
-                GLSLGraphIO(
-                    name='COMPUTE_SHADER',
-                    define='CUSTOM_COMPUTE_SHADER',
-                    shader_type='COMPUTE_STAGE',
-                )
-            ],
-        )
-        # Pipeline.add_graph() will append SHADER_INCLUDE_PATHS (which includes
-        # Malt/Shaders/) to compute.include_paths, so 'Compute/NPR_ComputeShader.glsl'
-        # resolves without any extra path manipulation here.
-        self.add_graph(compute)
-        from Malt.Pipeline import SHADER_DIR
-        compute.add_library(os.path.join(SHADER_DIR, 'Compute'))
 
         render_layer = PythonPipelineGraph(
             name='Render Layer',

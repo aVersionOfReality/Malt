@@ -9,17 +9,22 @@
 // weighted sum, normalizes it, then blends with the current corner's scaled
 // value using APPLICATION_STRENGTH.  The result is normalized and scattered.
 //
-// Per-corner weight parameters (binding 18, smooth_weights vec4[]):
-//   .x = application_strength: per-iteration blend (0 = no change, 1 = full)
-//   .y = contribution_strength: scales neighbor values during gather
-//   .z = own_normal_strength: scales a corner's normal everywhere it appears
-//   Written by the barrier node function body, read by this kernel per-corner.
-//   In gather, neighbor's own_normal_strength and contribution_strength are used.
-//   In self blend, current corner's application_strength and own_normal_strength.
+// Per-corner weight parameters are split across two SSBOs that mirror the two
+// face-corner color attributes (avr_malt_laplacian1, avr_malt_laplacian2):
 //
-//   .w = mix_factor: post-all-iterations blend between rest normal and smoothed
-//     result (0 = rest, 1 = fully smoothed).  Only applied on the last
-//     iteration (LAST_ITERATION == 1).
+//   smooth_weights (binding 18, vec4[]) — maps to avr_malt_laplacian1:
+//     .x = mix_factor: post-all-iterations blend between rest normal and
+//          smoothed result (0 = rest, 1 = fully smoothed).
+//     .y = momentum_factor: velocity-based smoothing momentum (0 = none,
+//          0.5 = max).  Blends previous iteration's delta into current step.
+//     .z = application_strength: per-iteration blend (0 = no change, 1 = full)
+//     .w = (unused)
+//
+//   smooth_weights_2 (binding 25, vec4[]) — maps to avr_malt_laplacian2:
+//     .x = contribution_strength: scales neighbor values during gather
+//     .y = own_normal_strength: scales a corner's normal everywhere it appears
+//     .z = (unused)
+//     .w = (unused)
 //
 // Cotangent weights (binding 16) are pre-computed CPU-side from the mesh
 // geometry.  They are indexed in parallel with the adjacency indices.
@@ -65,8 +70,15 @@ layout(std430, binding = 22) readonly buffer FAN_GROUPS { int fan_groups_buf[]; 
 // Rest normals for post-iteration mix (binding 12, already bound by Pipeline).
 layout(std430, binding = 12) readonly buffer REST_NORMALS { vec4 rest_normals_buf[]; };
 
-// Per-corner weight parameters (written by barrier node in graph shader).
+// Per-corner weight parameters — maps to avr_malt_laplacian1.
 layout(std430, binding = 18) readonly buffer SMOOTH_WEIGHTS { vec4 smooth_weights[]; };
+// Per-corner weight parameters — maps to avr_malt_laplacian2.
+layout(std430, binding = 25) readonly buffer SMOOTH_WEIGHTS_2 { vec4 smooth_weights_2[]; };
+
+// Previous iteration's result, for momentum.  Bound by Python to the
+// source buffer from the PREVIOUS iteration (or to the initial normals
+// for the first iteration).
+layout(std430, binding = 26) readonly buffer SMOOTH_PREV { vec4 smooth_prev[]; };
 
 uniform uint LOOP_COUNT = 0u;
 uniform uint VERTEX_COUNT = 0u;
@@ -74,6 +86,7 @@ uniform float COTANGENT_FACTOR = 1.0;         // 0 = uniform weights, 1 = cotang
 uniform int LAST_ITERATION = 0;              // 1 on the final iteration — triggers per-corner mix with rest normal
 uniform int GROUPS_ENABLED = 0;               // 0 = legacy per-vertex, 1 = group-aware
 uniform int QUAD_MODE = 0;                    // 0 = skip diagonals, 1 = include (uniform), 2 = include (cotangent)
+uniform int ITERATION_INDEX = 0;             // current iteration number (0-based), used for momentum
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -133,16 +146,17 @@ void main() {
         }
 
         // Per-corner neighbor weights: own_normal_strength and contribution_strength
-        // from the NEIGHBOR corner's smooth_weights entry.
-        float n_own  = smooth_weights[neighbor_corner].z;
-        float n_cont = smooth_weights[neighbor_corner].y;
+        // from the NEIGHBOR corner's weight entries.
+        float n_own  = smooth_weights_2[neighbor_corner].y;
+        float n_cont = smooth_weights_2[neighbor_corner].x;
         raw_sum += w * smooth_src[neighbor_corner].xyz * n_own * n_cont;
         any_gathered = true;
     }
 
     // Per-corner weights for the current corner.
-    float my_app = smooth_weights[idx].x;
-    float my_own = smooth_weights[idx].z;
+    float my_app = smooth_weights[idx].z;
+    float my_own = smooth_weights_2[idx].y;
+    float my_mom = smooth_weights[idx].y;
 
     vec3 smoothed;
     if (any_gathered && length(raw_sum) > 1e-10) {
@@ -156,11 +170,20 @@ void main() {
         smoothed = current_val;
     }
 
+    // --- Momentum: blend in delta from previous iteration ---
+    // On iteration > 0, compute the velocity (change from prev to current src)
+    // and add a fraction of it to the smoothed result.
+    if (ITERATION_INDEX > 0 && my_mom > 0.0) {
+        vec3 prev_val = smooth_prev[idx].xyz;
+        vec3 velocity = current_val - prev_val;
+        smoothed = normalize(smoothed + my_mom * velocity);
+    }
+
     // --- Post-iteration mix: blend smoothed result with rest normal ---
     // Only applied on the last iteration.  Per-corner mix_factor is in
-    // smooth_weights[idx].w (written by barrier node function body).
+    // smooth_weights[idx].x.
     if (LAST_ITERATION != 0) {
-        float my_mix = smooth_weights[idx].w;
+        float my_mix = smooth_weights[idx].x;
         if (my_mix < 1.0) {
             vec3 rest_val = rest_normals_buf[idx].xyz;
             smoothed = normalize(mix(rest_val, smoothed, my_mix));

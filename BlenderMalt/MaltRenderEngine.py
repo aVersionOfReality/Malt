@@ -46,9 +46,9 @@ def _extract_bone_matrices(armature_obj):
                 matrices[i * 16 + col * 4 + row] = mat[row][col]
     return bytes(matrices)
 
-# Set to True by track_compute_shader_changes() after a successful recompile so that
-# view_draw() knows it must submit a new render frame (request_new_frame was already
-# consumed before the recompile finished, so tag_redraw alone is not enough).
+# Set to True after a shader recompile so that view_draw() knows it must
+# submit a new render frame (request_new_frame was already consumed before
+# the recompile finished, so tag_redraw alone is not enough).
 NEEDS_RERENDER = False
 
 WINM = None
@@ -166,53 +166,55 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                         for i, mesh in enumerate(meshes[name]):
                             scene.proxys[('mesh',name,i)] = mesh.mesh
 
-                        # Compute shader proxy: if the mesh data has a compute
-                        # node tree assigned, create a proxy so the server-side
-                        # mesh gets mesh.compute_shader set each frame.
-                        compute_tree_name = getattr(obj.original.data, 'malt_compute_nodes', '')
-                        compute_tree = bpy.data.node_groups.get(compute_tree_name) if compute_tree_name else None
-                        if compute_tree and hasattr(compute_tree, 'get_generated_source_path'):
-                            compute_path = compute_tree.get_generated_source_path()
-                            if compute_path:
-                                from Bridge.Proxys import ComputeShaderProxy
-                                all_params = compute_tree.malt_parameters.get_parameters(overrides, scene.proxys)
-                                # Filter to only parameters from linked (connected)
-                                # nodes.  Prevents marker-node parameters (e.g.
-                                # smooth_iterations from a disconnected
-                                # Laplacian_Smooth) from leaking into
-                                # compute_shader_parameters and causing unintended
-                                # dispatch behavior in Pipeline.run_compute_pass().
-                                linked_keys_raw = compute_tree.get('linked_param_keys')
-                                if linked_keys_raw is not None:
-                                    linked_keys = set(linked_keys_raw)
-                                    compute_params = {k: v for k, v in all_params.items() if k in linked_keys}
-                                else:
-                                    compute_params = all_params  # fallback: keys not yet computed
-                                dispatch_plan_raw = compute_tree.get('dispatch_plan')
-                                # Convert IDProperty types to plain Python dicts/lists
-                                # so the dispatch plan survives pickle serialization
-                                # across the Bridge process boundary.
-                                if dispatch_plan_raw:
-                                    dispatch_plan = [dict(step) for step in dispatch_plan_raw]
-                                else:
-                                    dispatch_plan = None
+                        # Compute pipeline proxy: if any compute operation or
+                        # tessellation is enabled on the mesh, create a proxy so
+                        # the server-side mesh gets compute_params set each frame.
+                        mesh_data = obj.original.data
+                        compute_skin = getattr(mesh_data, 'malt_compute_skin', False)
+                        compute_curvature = getattr(mesh_data, 'malt_compute_curvature', False)
+                        compute_smooth = getattr(mesh_data, 'malt_compute_smooth_normals', False)
+                        tessellation_enabled = getattr(mesh_data, 'malt_tessellation', False)
 
-                                # Extract per-frame bone matrices if the dispatch
-                                # plan has a skin step.
-                                bone_matrices = None
-                                if dispatch_plan:
-                                    has_skin = any(s.get('type') == 'skin' for s in dispatch_plan)
-                                    if has_skin:
-                                        arm_obj = _find_armature_blender(obj)
-                                        if arm_obj is not None:
-                                            bone_matrices = _extract_bone_matrices(arm_obj)
+                        # Always create a ComputeShaderProxy so compute_params
+                        # reflects the current UI state each frame.  Without
+                        # this, toggling a feature off leaves stale params on
+                        # the server-side mesh from the previous frame.
+                        from Bridge.Proxys import ComputeShaderProxy
+                        compute_params = {
+                            'compute_skin': compute_skin,
+                            'compute_curvature': compute_curvature,
+                            'compute_smooth_normals': compute_smooth,
+                            'tessellation_enabled': tessellation_enabled,
+                            'smooth_iterations': getattr(mesh_data, 'malt_smooth_iterations', 10),
+                            'smooth_cotangent_factor': getattr(mesh_data, 'malt_smooth_cotangent_factor', 1.0),
+                            'smooth_quad_mode': getattr(mesh_data, 'malt_smooth_quad_mode', 0),
+                            'smooth_groups_enabled': getattr(mesh_data, 'malt_smooth_groups_enabled', True),
+                            # Varying parameters (uniform or per-corner attribute).
+                            # Order matches avr_malt_laplacian1/2 channel layout.
+                            'smooth_mix_factor': getattr(mesh_data, 'malt_smooth_mix_factor', 1.0),
+                            'smooth_momentum_factor': getattr(mesh_data, 'malt_smooth_momentum_factor', 0.25),
+                            'smooth_application_strength': getattr(mesh_data, 'malt_smooth_application_strength', 0.5),
+                            'smooth_contribution_strength': getattr(mesh_data, 'malt_smooth_contribution_strength', 1.0),
+                            'smooth_own_normal_strength': getattr(mesh_data, 'malt_smooth_own_normal_strength', 1.0),
+                            # Per-parameter attribute toggles.
+                            'use_attr_mix_factor': getattr(mesh_data, 'malt_smooth_use_attr_mix_factor', False),
+                            'use_attr_momentum': getattr(mesh_data, 'malt_smooth_use_attr_momentum', False),
+                            'use_attr_application': getattr(mesh_data, 'malt_smooth_use_attr_application', False),
+                            'use_attr_contribution': getattr(mesh_data, 'malt_smooth_use_attr_contribution', False),
+                            'use_attr_own_normal': getattr(mesh_data, 'malt_smooth_use_attr_own_normal', False),
+                        }
 
-                                for i in range(len(malt_mesh)):
-                                    proxy_key = ('compute', name, i)
-                                    scene.proxys[proxy_key] = ComputeShaderProxy(
-                                        name, i, compute_path, compute_params,
-                                        dispatch_plan=dispatch_plan,
-                                        bone_matrices=bone_matrices)
+                        bone_matrices = None
+                        if compute_skin:
+                            arm_obj = _find_armature_blender(obj)
+                            if arm_obj is not None:
+                                bone_matrices = _extract_bone_matrices(arm_obj)
+
+                        for i in range(len(malt_mesh)):
+                            proxy_key = ('compute', name, i)
+                            scene.proxys[proxy_key] = ComputeShaderProxy(
+                                name, i, compute_params,
+                                bone_matrices=bone_matrices)
                     else:
                         meshes[name] = None
 

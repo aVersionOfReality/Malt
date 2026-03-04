@@ -24,22 +24,26 @@ def _find_armature(object):
     return None
 
 def _get_compute_requirements(object):
-    """Return the compute requirements dict from the object's compute tree.
-    The dict has int flags (0/1) for each data category:
+    """Return compute requirements derived from mesh-level boolean properties.
+    Returns a dict with flags:
       'smooth_data' — adjacency CSR, vert_corner CSR, fan_groups, cotangent weights, edge metadata
       'bone_data'   — per-vertex bone indices and weights
-    Returns an empty dict if no compute tree is assigned or requirements are not yet computed."""
+      'curvature_data' — (implied by smooth_data, but tracked separately)
+    Returns an empty dict if no compute operations are enabled."""
     mesh_data = object.original.data if object.original else object.data
-    compute_tree_name = getattr(mesh_data, 'malt_compute_nodes', '') if mesh_data else ''
-    if not compute_tree_name:
+    if mesh_data is None:
         return {}
-    compute_tree = bpy.data.node_groups.get(compute_tree_name)
-    if compute_tree is None:
-        return {}
-    reqs = compute_tree.get('compute_requirements')
-    if reqs is None:
-        return {}
-    return dict(reqs)
+    reqs = {}
+    has_smooth = getattr(mesh_data, 'malt_compute_smooth_normals', False)
+    has_curvature = getattr(mesh_data, 'malt_compute_curvature', False)
+    has_skin = getattr(mesh_data, 'malt_compute_skin', False)
+    if has_smooth or has_curvature:
+        reqs['smooth_data'] = 1
+    if has_curvature:
+        reqs['curvature_data'] = 1
+    if has_skin:
+        reqs['bone_data'] = 1
+    return reqs
 
 def load_mesh(object, name):
     from . import CBlenderMalt
@@ -141,9 +145,8 @@ def load_mesh(object, name):
     CBlenderMalt.pad_vec3_to_vec4(norm_src, norm_dst, loop_count)
 
     # Rest normals: read-only copy of the original Blender normals (binding 12).
-    # main() in NPR_ComputeShader.glsl initialises the 'normal' inout parameter from
-    # this buffer, so the Compute Input node always delivers the original mesh normal
-    # regardless of what the compute shader wrote to normals[] on the previous frame.
+    # Used by the smooth kernel for mix_factor blend and by _reset_buffers()
+    # to restore normals[] to rest pose at the start of each compute frame.
     rest_normals = get_load_buffer('rest_normals', ctypes.c_float, loop_count * 4)
     ctypes.memmove(rest_normals.buffer(), normals.buffer(), normals.size_in_bytes())
 
@@ -339,6 +342,37 @@ def load_mesh(object, name):
         edge_meta_buf = get_load_buffer('edge_metadata', ctypes.c_int, max(edge_meta_count, 1))
         ctypes.memmove(edge_meta_buf.buffer(), out_emeta, max(edge_meta_count, 1) * ctypes.sizeof(ctypes.c_int))
 
+    # Laplacian smooth per-corner weight attributes (face corner color, vec4).
+    # Two attributes, matching the two smooth_weights SSBOs:
+    #   avr_malt_laplacian1: R=mix_factor, G=momentum, B=application, A=unused
+    #   avr_malt_laplacian2: R=contribution, G=own_normal, B=unused, A=unused
+    # Accepts FLOAT_COLOR (vec4) or BYTE_COLOR (uint8 vec4).
+    # The attributes may be created by Geometry Nodes (only on evaluated mesh).
+    laplacian1_buf = None
+    laplacian2_buf = None
+    if needs_smooth:
+        for attr_name, buf_name in [('avr_malt_laplacian1', 'laplacian1'),
+                                     ('avr_malt_laplacian2', 'laplacian2')]:
+            attr = m.attributes.get(attr_name)
+            if attr and attr.domain == 'CORNER':
+                if attr.data_type == 'FLOAT_COLOR':
+                    src = (ctypes.c_float * (loop_count * 4)).from_address(attr.data[0].as_pointer())
+                    buf = get_load_buffer(buf_name, ctypes.c_float, loop_count * 4)
+                    ctypes.memmove(buf.buffer(), src, buf.size_in_bytes())
+                elif attr.data_type == 'BYTE_COLOR':
+                    src = (ctypes.c_uint8 * (loop_count * 4)).from_address(attr.data[0].as_pointer())
+                    buf = get_load_buffer(buf_name, ctypes.c_float, loop_count * 4)
+                    dst = ctypes.cast(buf.buffer(), ctypes.POINTER(ctypes.c_float))
+                    for j in range(loop_count * 4):
+                        dst[j] = src[j] / 255.0
+                else:
+                    buf = None
+                if buf is not None:
+                    if buf_name == 'laplacian1':
+                        laplacian1_buf = buf
+                    else:
+                        laplacian2_buf = buf
+
     _t6 = _time.perf_counter()
     # Bone indices and weights for GPU skinning (per-vertex, max 4 influences).
     # Only extracted when the compute graph has a skin barrier connected to the output.
@@ -426,6 +460,8 @@ def load_mesh(object, name):
         'fan_groups': fan_groups_buf,
         'cotangent_weights': cotangent_weights_buf,
         'edge_metadata': edge_meta_buf,
+        'laplacian1': laplacian1_buf,
+        'laplacian2': laplacian2_buf,
         'bone_indices': bone_indices_buf,
         'bone_weights': bone_weights_buf,
         'bone_count': bone_count,
@@ -469,10 +505,69 @@ def draw_vertex_color_overrides(self, context):
 
 
 def register():
-    bpy.types.Mesh.malt_compute_nodes = bpy.props.StringProperty(
-        name='Compute Node Tree',
-        description='Malt Compute node tree to run on this mesh each frame',
-        options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
+    # Compute pipeline enable/disable toggles.
+    bpy.types.Mesh.malt_compute_skin = bpy.props.BoolProperty(
+        name='GPU Skinning', default=False,
+        description='Enable GPU Linear Blend Skinning')
+    bpy.types.Mesh.malt_compute_curvature = bpy.props.BoolProperty(
+        name='Curvature', default=False,
+        description='Compute per-corner curvature for tessellation and shading')
+    bpy.types.Mesh.malt_compute_smooth_normals = bpy.props.BoolProperty(
+        name='Laplacian Smooth Normals', default=False,
+        description='Laplacian smooth normals for stylized shading')
+
+    # Smooth normals parameters.
+    bpy.types.Mesh.malt_smooth_iterations = bpy.props.IntProperty(
+        name='Iterations', default=10, min=1, max=500,
+        description='Number of Laplacian smoothing iterations')
+    bpy.types.Mesh.malt_smooth_cotangent_factor = bpy.props.FloatProperty(
+        name='Cotangent Factor', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Blend between uniform (0) and cotangent (1) weights')
+    bpy.types.Mesh.malt_smooth_quad_mode = bpy.props.IntProperty(
+        name='Quad Mode', default=2, min=0, max=2,
+        description='0 = standard, 1 = quad virtual triangulation, 2 = quad full')
+    bpy.types.Mesh.malt_smooth_mix_factor = bpy.props.FloatProperty(
+        name='Smooth Mix Factor', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Blend between original (0) and smoothed (1) normals')
+    bpy.types.Mesh.malt_smooth_momentum_factor = bpy.props.FloatProperty(
+        name='Momentum Factor', default=0.25, soft_min=0.0, soft_max=0.5,
+        description='Velocity-based smoothing momentum per iteration')
+    bpy.types.Mesh.malt_smooth_application_strength = bpy.props.FloatProperty(
+        name='Application Strength', default=0.5, soft_min=0.0, soft_max=1.0,
+        description='How much smoothing is applied per iteration')
+    bpy.types.Mesh.malt_smooth_contribution_strength = bpy.props.FloatProperty(
+        name='Contribution Strength', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Weight of neighbor contributions')
+    bpy.types.Mesh.malt_smooth_own_normal_strength = bpy.props.FloatProperty(
+        name='Own Normal Strength', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Weight of own normal in the smoothing blend')
+    bpy.types.Mesh.malt_smooth_groups_enabled = bpy.props.BoolProperty(
+        name='Fan Groups', default=True,
+        description='Respect smooth/sharp edge groups during smoothing')
+
+    # Per-parameter attribute toggles.
+    # avr_malt_laplacian1: R=mix_factor, G=momentum, B=application
+    bpy.types.Mesh.malt_smooth_use_attr_mix_factor = bpy.props.BoolProperty(
+        name='Use Attribute', default=False,
+        description='Use avr_malt_laplacian1.R instead of uniform value')
+    bpy.types.Mesh.malt_smooth_use_attr_momentum = bpy.props.BoolProperty(
+        name='Use Attribute', default=False,
+        description='Use avr_malt_laplacian1.G instead of uniform value')
+    bpy.types.Mesh.malt_smooth_use_attr_application = bpy.props.BoolProperty(
+        name='Use Attribute', default=False,
+        description='Use avr_malt_laplacian1.B instead of uniform value')
+    # avr_malt_laplacian2: R=contribution, G=own_normal
+    bpy.types.Mesh.malt_smooth_use_attr_contribution = bpy.props.BoolProperty(
+        name='Use Attribute', default=False,
+        description='Use avr_malt_laplacian2.R instead of uniform value')
+    bpy.types.Mesh.malt_smooth_use_attr_own_normal = bpy.props.BoolProperty(
+        name='Use Attribute', default=False,
+        description='Use avr_malt_laplacian2.G instead of uniform value')
+
+    # Tessellation toggle.
+    bpy.types.Mesh.malt_tessellation = bpy.props.BoolProperty(
+        name='Tessellation', default=False,
+        description='Enable GPU tessellation for this mesh')
 
     bpy.types.Mesh.malt_vertex_color_override_0 = bpy.props.StringProperty(name='0',
         options={'LIBRARY_EDITABLE'}, override={'LIBRARY_OVERRIDABLE'})
@@ -486,7 +581,24 @@ def register():
 
 
 def unregister():
-    del bpy.types.Mesh.malt_compute_nodes
+    del bpy.types.Mesh.malt_compute_skin
+    del bpy.types.Mesh.malt_compute_curvature
+    del bpy.types.Mesh.malt_compute_smooth_normals
+    del bpy.types.Mesh.malt_smooth_iterations
+    del bpy.types.Mesh.malt_smooth_cotangent_factor
+    del bpy.types.Mesh.malt_smooth_quad_mode
+    del bpy.types.Mesh.malt_smooth_mix_factor
+    del bpy.types.Mesh.malt_smooth_momentum_factor
+    del bpy.types.Mesh.malt_smooth_application_strength
+    del bpy.types.Mesh.malt_smooth_contribution_strength
+    del bpy.types.Mesh.malt_smooth_own_normal_strength
+    del bpy.types.Mesh.malt_smooth_groups_enabled
+    del bpy.types.Mesh.malt_smooth_use_attr_mix_factor
+    del bpy.types.Mesh.malt_smooth_use_attr_momentum
+    del bpy.types.Mesh.malt_smooth_use_attr_application
+    del bpy.types.Mesh.malt_smooth_use_attr_contribution
+    del bpy.types.Mesh.malt_smooth_use_attr_own_normal
+    del bpy.types.Mesh.malt_tessellation
 
     bpy.types.DATA_PT_vertex_colors.remove(draw_vertex_color_overrides)
     del bpy.types.Mesh.malt_vertex_color_override_0

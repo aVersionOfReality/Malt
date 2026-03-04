@@ -193,32 +193,6 @@ class MaltTree(bpy.types.NodeTree):
             return os.path.join(self.get_generated_source_dir(),'{}-{}{}'.format(file_prefix, self.name, pipeline_graph.file_extension))
         return None
     
-    def _get_barrier_meta(self, node):
-        """Return the function metadata dict for a barrier node, or None."""
-        if not hasattr(node, 'function_type') or not node.function_type:
-            return None
-        graph = self.get_pipeline_graph()
-        if graph is None:
-            return None
-        function = graph.functions.get(node.function_type)
-        if function is None:
-            lib = self.get_full_library()
-            function = lib['functions'].get(node.function_type)
-        if function is None:
-            return None
-        return function['meta'] if function['meta'].get('barrier', False) else None
-
-    def _is_barrier_node(self, node):
-        """Return True if *node* has barrier=true in its function metadata."""
-        return self._get_barrier_meta(node) is not None
-
-    def get_segment_source_path(self, segment_index):
-        """Return the file path for a specific segment shader."""
-        base = self.get_generated_source_path()
-        if base is None:
-            return None
-        return base.replace('.compute.glsl', f'_seg{segment_index}.compute.glsl')
-
     def get_generated_source(self, force_update=False):
         if force_update == False and self.get('source'):
             return self['source']
@@ -268,357 +242,30 @@ class MaltTree(bpy.types.NodeTree):
             add_node_inputs(output, nodes, output.io_type)
             all_topo_nodes[output.io_type] = (nodes, output)
 
-        # Check for barrier nodes and curvature nodes in any output's topo list.
-        has_barriers = False
-        has_curvature = False
-        has_smooth_barrier = False
-        has_smooth_normal_barrier = False
-        for io_type, (nodes, output) in all_topo_nodes.items():
-            for node in nodes:
-                if self._is_barrier_node(node):
-                    has_barriers = True
-                    bmeta = self._get_barrier_meta(node)
-                    if bmeta and bmeta.get('smooth_target'):
-                        has_smooth_barrier = True
-                        if bmeta.get('smooth_target') == 'normal':
-                            has_smooth_normal_barrier = True
-                ft = getattr(node, 'function_type', '')
-                if 'Calculate_Curvature' in ft or 'Compute_Curvature' in ft:
-                    has_curvature = True
-            if has_barriers and has_curvature:
-                break
-
-        # Adjacency SSBOs (13, 14, 16, 18) needed by curvature nodes AND smooth barrier bodies.
-        needs_adjacency = has_curvature or has_smooth_barrier
-        if not has_barriers:
-            # ── Single-segment path (unchanged legacy behavior) ──
-            def get_source(output):
-                nodes, _ = all_topo_nodes.get(output.io_type, ([], None))
-                code = ''
-                for node in nodes:
-                    if hasattr(node, 'get_source_code'):
-                        code += node.get_source_code(transpiler) + '\n'
-                code += output.get_source_code(transpiler)
-                return code
-
-            shader = {}
-            for output in output_nodes:
-                shader[output.io_type] = get_source(output)
-            shader['GLOBAL'] = ''
-            library_path = self.get_library_path()
-            if library_path:
-                shader['GLOBAL'] += '#include "{}"\n'.format(library_path)
-            for node in linked_nodes:
-                if hasattr(node, 'get_source_global_parameters'):
-                    shader['GLOBAL'] += node.get_source_global_parameters(transpiler)
-
-            # Inject SSBO gate defines based on what the graph needs.
-            shader['DEFINES'] = []
-            if needs_adjacency:
-                shader['DEFINES'].append('NEEDS_ADJACENCY_DATA')
-            if has_curvature:
-                shader['DEFINES'].append('NEEDS_CURVATURE_DATA')
-            if has_smooth_normal_barrier:
-                shader['DEFINES'].append('NEEDS_SMOOTHED_NORMALS')
-
-            self['linked_param_keys'] = list(collect_linked_param_keys())
-            self['source'] = pipeline_graph.generate_source(shader)
-            # Clear multi-segment data (IDProperties cannot store None)
-            for key in ('segment_sources', 'dispatch_plan', 'compute_requirements'):
-                if key in self:
-                    del self[key]
-            # No barriers → no special data requirements (except curvature if detected).
-            self['compute_requirements'] = {
-                'smooth_data': 1 if needs_adjacency else 0,
-                'bone_data': 0,
-                'curvature_data': 1 if has_curvature else 0,
-            }
-            return self['source']
-
-        # ── Multi-segment path: partition at barrier nodes ──
-        # We handle one output (COMPUTE) for now.
-        io_type = output_nodes[0].io_type
-        nodes, output_node = all_topo_nodes[io_type]
-
-        # Partition: split the topo-sorted node list at barriers.
-        # Each barrier produces a smooth step between the segment
-        # before it and the segment after it.
-        segments = [[]]       # list of node lists
-        barriers = []         # barrier nodes, in order
-        for node in nodes:
-            if self._is_barrier_node(node):
-                # Include the barrier in the current segment so its
-                # inout variable is declared (the function is a no-op).
-                segments[-1].append(node)
-                barriers.append(node)
-                segments.append([])  # start a new segment
-            else:
-                segments[-1].append(node)
-
-        # The output node goes in the final segment.
-        # (It is not in `nodes` — it's handled separately by get_source.)
-
-        # Build a set mapping each node to the segment index it *primarily*
-        # belongs to (for cross-segment reference detection).
-        node_segment = {}
-        for seg_idx, seg_nodes in enumerate(segments):
-            for n in seg_nodes:
-                node_segment[n] = seg_idx
-
-        # Cross-segment reference duplication: for each segment after the
-        # first, if a node's input comes from an earlier segment, duplicate
-        # that node (and its transitive deps) into this segment.
-        # Barrier nodes are excluded: their inout variables are handled by
-        # the alias declarations generated below (lines 374+), and their
-        # upstream deps don't need re-evaluation because the smooth kernel
-        # has already written the result to deformed_positions.
-        barrier_set = set(barriers)
-        def get_cross_segment_deps(node, seg_idx, collected):
-            """Recursively collect nodes from earlier segments that *node* depends on."""
-            for inp in node.inputs:
-                linked = inp.get_linked()
-                if linked is None:
-                    continue
-                dep_node = linked.node
-                if dep_node in collected or dep_node in barrier_set:
-                    continue
-                dep_seg = node_segment.get(dep_node)
-                if dep_seg is not None and dep_seg < seg_idx:
-                    get_cross_segment_deps(dep_node, seg_idx, collected)
-                    collected.append(dep_node)
-
-        for seg_idx in range(1, len(segments)):
-            cross_deps = []
-            for node in segments[seg_idx]:
-                get_cross_segment_deps(node, seg_idx, cross_deps)
-            if cross_deps:
-                # Prepend cross-segment deps (in topo order, which the
-                # recursive collection already provides).
-                segments[seg_idx] = cross_deps + segments[seg_idx]
-
-        # Generate source for each segment.
-        library_path = self.get_library_path()
-        segment_sources = []
-        for seg_idx, seg_nodes in enumerate(segments):
+        def get_source(output):
+            nodes, _ = all_topo_nodes.get(output.io_type, ([], None))
             code = ''
-
-            # For segments after the first, any reference to a barrier
-            # node's inout variable from an earlier segment would be
-            # dangling.  Declare local aliases that map the barrier's
-            # variable name to the COMPUTE_SHADER function parameter
-            # (which main() initialises from deformed_positions).
-            if seg_idx > 0:
-                # Track which variables were smoothed by barrier kernels so we
-                # can reset them to rest-buffer values after capturing the
-                # smoothed result in the alias.  This lets nodes in this
-                # segment (e.g. Compute Input → normal) read the *original*
-                # values while the barrier alias holds the smoothed values.
-                smoothed_vars = set()
-                for barrier in barriers[:seg_idx]:
-                    barrier_src = barrier.get_source_name()
-                    barrier_meta = self._get_barrier_meta(barrier)
-                    if hasattr(barrier, 'get_function'):
-                        bfunc = barrier.get_function()
-                        if bfunc:
-                            for param in bfunc['parameters']:
-                                if param['io'] == 'inout' and param['name'] in ('position', 'normal'):
-                                    var_ref = transpiler.parameter_reference(
-                                        barrier_src, param['name'], 'inout')
-                                    # Normal-targeting smooth barriers write to smoothed_normals SSBO
-                                    # (binding 24), so read the alias from there instead of the
-                                    # normal variable (which still holds rest normals).
-                                    if (param['name'] == 'normal' and barrier_meta
-                                            and barrier_meta.get('smooth_target') == 'normal'):
-                                        init_value = 'smoothed_normals[gl_GlobalInvocationID.x].xyz'
-                                    else:
-                                        init_value = param['name']
-                                    code += transpiler.declaration(
-                                        param['type'], 0, var_ref, init_value)
-                    # Determine which variable this barrier's kernel smoothed.
-                    # Skin barriers write directly to deformed_positions/normals
-                    # and the post-skin segment should see those values — no
-                    # rest-buffer reset needed.
-                    # Normal-targeting smooth barriers write to the separate
-                    # smoothed_normals SSBO, so normals[] is never modified —
-                    # no rest-buffer reset needed for 'normal'.
-                    if barrier_meta and not barrier_meta.get('skin'):
-                        target = barrier_meta.get('smooth_target', 'position')
-                        if target != 'normal':
-                            smoothed_vars.add(target)
-
-                # Reset smoothed variables to rest-buffer values so that
-                # Compute Input references see the originals, not the
-                # post-smooth values.  The barrier aliases above already
-                # captured the smoothed result.
-                # Note: 'normal' is excluded when the smooth kernel writes to
-                # smoothed_normals[] — normals[] stays untouched.
-                # Guard with ITERATION == 0 so that multi-iteration segments
-                # only reset on the first pass (later iterations should build
-                # on the previous iteration's output, not the rest pose).
-                rest_buffer_map = {
-                    'normal':   'rest_normals[gl_GlobalInvocationID.x].xyz',
-                    'position': 'rest_positions[gl_GlobalInvocationID.x].xyz',
-                }
-                resets = []
-                for var_name in sorted(smoothed_vars):
-                    if var_name in rest_buffer_map:
-                        resets.append(f'{var_name} = {rest_buffer_map[var_name]};')
-                if resets:
-                    code += 'if (ITERATION == 0u) {\n'
-                    for r in resets:
-                        code += f'    {r}\n'
-                    code += '}\n'
-
-            for node in seg_nodes:
+            for node in nodes:
                 if hasattr(node, 'get_source_code'):
                     code += node.get_source_code(transpiler) + '\n'
+            code += output.get_source_code(transpiler)
+            return code
 
-            is_last = (seg_idx == len(segments) - 1)
-            if is_last:
-                # Final segment includes the Output node's assignments.
-                code += output_node.get_source_code(transpiler)
-            else:
-                # Intermediate segment: generate synthetic assignment of
-                # the barrier's inout position/normal back to the function
-                # parameters so main() writes them to deformed_positions.
-                barrier = barriers[seg_idx]
-                barrier_source_name = barrier.get_source_name()
-                if hasattr(barrier, 'get_function'):
-                    func = barrier.get_function()
-                    if func:
-                        for param in func['parameters']:
-                            if param['io'] == 'inout' and param['name'] in ('position', 'normal'):
-                                var_ref = transpiler.parameter_reference(
-                                    barrier_source_name, param['name'], 'inout')
-                                code += transpiler.asignment(param['name'], var_ref)
+        shader = {}
+        for output in output_nodes:
+            shader[output.io_type] = get_source(output)
+        shader['GLOBAL'] = ''
+        library_path = self.get_library_path()
+        if library_path:
+            shader['GLOBAL'] += '#include "{}"\n'.format(library_path)
+        for node in linked_nodes:
+            if hasattr(node, 'get_source_global_parameters'):
+                shader['GLOBAL'] += node.get_source_global_parameters(transpiler)
 
-            # Per-segment global declarations.
-            seg_global = ''
-            if library_path:
-                seg_global += '#include "{}"\n'.format(library_path)
-            # Collect globals from all nodes in this segment (including
-            # cross-segment duplicates and the output node if last segment).
-            seg_all_nodes = list(seg_nodes)
-            if is_last:
-                seg_all_nodes.append(output_node)
-            for node in seg_all_nodes:
-                if hasattr(node, 'get_source_global_parameters'):
-                    seg_global += node.get_source_global_parameters(transpiler)
-
-            # Inject SSBO gate defines for multi-segment too.
-            seg_defines = []
-            if needs_adjacency:
-                seg_defines.append('NEEDS_ADJACENCY_DATA')
-            if has_curvature:
-                seg_defines.append('NEEDS_CURVATURE_DATA')
-            if has_smooth_normal_barrier:
-                seg_defines.append('NEEDS_SMOOTHED_NORMALS')
-
-            # Check if any curvature node in this segment reads smoothed normals
-            # (i.e. its normal input is connected to a smooth barrier's output).
-            for node in seg_nodes:
-                ft = getattr(node, 'function_type', '')
-                if 'Calculate_Curvature' not in ft and 'Compute_Curvature' not in ft:
-                    continue
-                if 'normal' in node.inputs:
-                    linked = node.inputs['normal'].get_linked()
-                    if linked is not None:
-                        upstream = linked.node
-                        if self._is_barrier_node(upstream):
-                            bmeta = self._get_barrier_meta(upstream)
-                            if bmeta and bmeta.get('smooth_target') == 'normal':
-                                seg_defines.append('CURVATURE_USE_SMOOTHED_NORMALS')
-                                break
-
-            seg_shader = {io_type: code, 'GLOBAL': seg_global, 'DEFINES': seg_defines}
-            segment_sources.append(pipeline_graph.generate_source(seg_shader))
-
-        # Build the dispatch plan.
-        dispatch_plan = []
-        for seg_idx in range(len(segments)):
-            # Detect per-segment iteration parameters.
-            iteration_param = None
-            for node in segments[seg_idx]:
-                if not hasattr(node, 'function_type') or not node.function_type:
-                    continue
-                func = None
-                if node.function_type in pipeline_graph.functions:
-                    func = pipeline_graph.functions[node.function_type]
-                if func is None:
-                    continue
-                for param in func['parameters']:
-                    if 'compute_iterations' in param['name'].lower():
-                        iteration_param = 'compute_iterations'
-                        break
-                if iteration_param:
-                    break
-
-            dispatch_plan.append({
-                'type': 'segment',
-                'index': seg_idx,
-                'path': self.get_segment_source_path(seg_idx),
-                'iteration_param': iteration_param or '',
-            })
-
-            # After each non-last segment, insert a kernel dispatch step for
-            # the barrier that separates it from the next segment.
-            if seg_idx < len(barriers):
-                barrier = barriers[seg_idx]
-                barrier_source_name = barrier.get_source_name()
-                barrier_meta = self._get_barrier_meta(barrier)
-
-                if barrier_meta and barrier_meta.get('skin'):
-                    # GPU Skinning barrier -> single-dispatch skin kernel step.
-                    # Check which inout outputs are actually connected downstream
-                    # so the kernel only writes the buffers the user wired up.
-                    skin_position = ('position' in barrier.outputs and
-                                     barrier.outputs['position'].is_linked)
-                    skin_normal = ('normal' in barrier.outputs and
-                                   barrier.outputs['normal'].is_linked)
-                    dispatch_plan.append({
-                        'type': 'skin',
-                        'node_prefix': barrier_source_name,
-                        'skin_position': skin_position,
-                        'skin_normal': skin_normal,
-                    })
-                else:
-                    # Laplacian smooth barrier -> iterative smooth kernel step.
-                    iter_key = transpiler.global_reference(
-                        barrier_source_name, 'smooth_iterations')
-                    cotangent_factor_key = transpiler.global_reference(
-                        barrier_source_name, 'cotangent_factor')
-                    quad_mode_key = transpiler.global_reference(
-                        barrier_source_name, 'quad_mode')
-                    smooth_target = barrier_meta.get('smooth_target', 'position') if barrier_meta else 'position'
-                    dispatch_plan.append({
-                        'type': 'smooth',
-                        'node_prefix': barrier_source_name,
-                        'iterations_key': iter_key,
-                        'cotangent_factor_key': cotangent_factor_key,
-                        'quad_mode_key': quad_mode_key,
-                        'smooth_target': smooth_target,
-                    })
-
-        # Build compute_requirements from the dispatch plan so load_mesh()
-        # knows which expensive data structures to build for this graph.
-        # Values are ints (0/1) because IDProperties stores bools as ints.
-        compute_requirements = {'smooth_data': 0, 'bone_data': 0, 'curvature_data': 0}
-        for step in dispatch_plan:
-            if step['type'] == 'smooth':
-                compute_requirements['smooth_data'] = 1
-            elif step['type'] == 'skin':
-                compute_requirements['bone_data'] = 1
-        if has_curvature:
-            compute_requirements['curvature_data'] = 1
-            # Curvature node needs adjacency CSR + cotangent weights.
-            compute_requirements['smooth_data'] = 1
+        shader['DEFINES'] = []
 
         self['linked_param_keys'] = list(collect_linked_param_keys())
-        self['segment_sources'] = segment_sources
-        self['dispatch_plan'] = dispatch_plan
-        self['compute_requirements'] = compute_requirements
-        # Primary source is the first segment (for backward compat / caching).
-        self['source'] = segment_sources[0] if segment_sources else ''
+        self['source'] = pipeline_graph.generate_source(shader)
         return self['source']
     
     def reload_nodes(self):
@@ -689,52 +336,12 @@ class MaltTree(bpy.types.NodeTree):
             import pathlib
             pathlib.Path(source_dir).mkdir(parents=True, exist_ok=True)
 
-            segment_sources = self.get('segment_sources')
-            dispatch_plan = self.get('dispatch_plan')
-            is_compute = source_path.endswith('.compute.glsl')
-            written_paths = []
-            if segment_sources and dispatch_plan and len(segment_sources) > 1:
-                # Multi-segment: write one file per segment.
-                import os, glob as glob_mod
-                written_norm = set()
-                for step in dispatch_plan:
-                    if step['type'] == 'segment':
-                        seg_path = step['path']
-                        with open(seg_path, 'w') as f:
-                            f.write(segment_sources[step['index']])
-                        written_norm.add(os.path.normpath(seg_path))
-                        written_paths.append(seg_path)
-                # Clean up stale segment files from a previous compilation
-                # that had more segments than the current one.
-                if is_compute:
-                    base = source_path.replace('.compute.glsl', '_seg*.compute.glsl')
-                    for existing in glob_mod.glob(base):
-                        if os.path.normpath(existing) not in written_norm:
-                            os.remove(existing)
-                # Clean up the single-file path if it exists from a
-                # previous non-barrier compilation.
-                if os.path.exists(source_path):
-                    os.remove(source_path)
-            else:
-                # Single segment: existing behavior.
-                with open(source_path, 'w') as f:
-                    f.write(source)
-                written_paths.append(source_path)
-                # Clean up stale segment files from a previous
-                # multi-segment compilation (only relevant for compute shaders).
-                if is_compute:
-                    import os, glob as glob_mod
-                    base = source_path.replace('.compute.glsl', '_seg*.compute.glsl')
-                    for stale in glob_mod.glob(base):
-                        os.remove(stale)
+            with open(source_path, 'w') as f:
+                f.write(source)
 
             if force_track_shader_changes:
                 from BlenderMalt import MaltMaterial
-                if is_compute:
-                    MaltMaterial.track_compute_shader_changes(
-                        force_paths=written_paths)
-                else:
-                    MaltMaterial.track_shader_changes()
+                MaltMaterial.track_shader_changes()
         except:
             import traceback
             traceback.print_exc()
@@ -759,7 +366,6 @@ def setup_node_trees():
             tree.update_ext(force_track_shader_changes=False, force_update=True)
     from BlenderMalt import MaltMaterial
     MaltMaterial.track_shader_changes()
-    MaltMaterial.track_compute_shader_changes()
 
 #SKIP_SAVE doesn't work
 def manual_skip_save():

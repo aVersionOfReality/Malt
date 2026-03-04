@@ -885,11 +885,61 @@ class MALT_PT_Mesh(MALT_PT_Base):
             return context.object.data
 
     def draw(self, context):
-        if context.mesh and hasattr(context.mesh, 'malt_compute_nodes'):
-            self.layout.prop_search(context.mesh, 'malt_compute_nodes',
-                                    bpy.data, 'node_groups',
-                                    text='Compute Node Tree')
-            self.layout.separator()
+        if context.mesh:
+            mesh = context.mesh
+            layout = self.layout
+
+            # Compute pipeline toggles.
+            box = layout.box()
+            box.label(text='Compute Pipeline')
+            box.prop(mesh, 'malt_compute_skin')
+            box.prop(mesh, 'malt_compute_curvature')
+            box.prop(mesh, 'malt_compute_smooth_normals')
+
+            # Smooth parameters (only shown when smooth is enabled).
+            if mesh.malt_compute_smooth_normals:
+                smooth_box = box.box()
+                smooth_box.label(text='Laplacian Smooth Normals')
+                row = smooth_box.row(align=True)
+                row.prop(mesh, 'malt_smooth_groups_enabled')
+                row.prop(mesh, 'malt_smooth_quad_mode')
+                row.prop(mesh, 'malt_smooth_cotangent_factor')
+                smooth_box.prop(mesh, 'malt_smooth_iterations')
+                # Varying parameters — each can use uniform or per-corner attribute.
+                # avr_malt_laplacian1: R=mix, G=momentum, B=application
+                row = smooth_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_smooth_use_attr_mix_factor
+                sub.prop(mesh, 'malt_smooth_mix_factor')
+                row.prop(mesh, 'malt_smooth_use_attr_mix_factor', text='Use Attribute')
+                row = smooth_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_smooth_use_attr_momentum
+                sub.prop(mesh, 'malt_smooth_momentum_factor')
+                row.prop(mesh, 'malt_smooth_use_attr_momentum', text='Use Attribute')
+                row = smooth_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_smooth_use_attr_application
+                sub.prop(mesh, 'malt_smooth_application_strength')
+                row.prop(mesh, 'malt_smooth_use_attr_application', text='Use Attribute')
+                # avr_malt_laplacian2: R=contribution, G=own_normal
+                row = smooth_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_smooth_use_attr_contribution
+                sub.prop(mesh, 'malt_smooth_contribution_strength')
+                row.prop(mesh, 'malt_smooth_use_attr_contribution', text='Use Attribute')
+                row = smooth_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_smooth_use_attr_own_normal
+                sub.prop(mesh, 'malt_smooth_own_normal_strength')
+                row.prop(mesh, 'malt_smooth_use_attr_own_normal', text='Use Attribute')
+
+            # Tessellation toggle.
+            box = layout.box()
+            box.label(text='Tessellation')
+            box.prop(mesh, 'malt_tessellation')
+
+            layout.separator()
         super().draw(context)
 
 class MALT_PT_Light(MALT_PT_Base):
