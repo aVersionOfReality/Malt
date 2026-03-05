@@ -509,6 +509,9 @@ def register():
     bpy.types.Mesh.malt_compute_skin = bpy.props.BoolProperty(
         name='GPU Skinning', default=False,
         description='Enable GPU Linear Blend Skinning')
+    bpy.types.Mesh.malt_skin_vertex_group = bpy.props.StringProperty(
+        name='Vertex Group', default='',
+        description='Vertex group to mask GPU skinning influence')
     bpy.types.Mesh.malt_compute_curvature = bpy.props.BoolProperty(
         name='Curvature', default=False,
         description='Compute per-corner curvature for tessellation and shading')
@@ -525,7 +528,7 @@ def register():
         description='Blend between uniform (0) and cotangent (1) weights')
     bpy.types.Mesh.malt_smooth_quad_mode = bpy.props.IntProperty(
         name='Quad Mode', default=2, min=0, max=2,
-        description='0 = standard, 1 = quad virtual triangulation, 2 = quad full')
+        description='0 = standard, 1 = quad uniform weight, 2 = quad virtual triangulation')
     bpy.types.Mesh.malt_smooth_mix_factor = bpy.props.FloatProperty(
         name='Smooth Mix Factor', default=1.0, soft_min=0.0, soft_max=1.0,
         description='Blend between original (0) and smoothed (1) normals')
@@ -533,7 +536,7 @@ def register():
         name='Momentum Factor', default=0.25, soft_min=0.0, soft_max=0.5,
         description='Velocity-based smoothing momentum per iteration')
     bpy.types.Mesh.malt_smooth_application_strength = bpy.props.FloatProperty(
-        name='Application Strength', default=0.5, soft_min=0.0, soft_max=1.0,
+        name='Application Strength', default=1.0, soft_min=0.0, soft_max=1.0,
         description='How much smoothing is applied per iteration')
     bpy.types.Mesh.malt_smooth_contribution_strength = bpy.props.FloatProperty(
         name='Contribution Strength', default=1.0, soft_min=0.0, soft_max=1.0,
@@ -548,20 +551,20 @@ def register():
     # Per-parameter attribute toggles.
     # avr_malt_laplacian1: R=mix_factor, G=momentum, B=application
     bpy.types.Mesh.malt_smooth_use_attr_mix_factor = bpy.props.BoolProperty(
-        name='Use Attribute', default=False,
+        name='Use Attribute', default=True,
         description='Use avr_malt_laplacian1.R instead of uniform value')
     bpy.types.Mesh.malt_smooth_use_attr_momentum = bpy.props.BoolProperty(
-        name='Use Attribute', default=False,
+        name='Use Attribute', default=True,
         description='Use avr_malt_laplacian1.G instead of uniform value')
     bpy.types.Mesh.malt_smooth_use_attr_application = bpy.props.BoolProperty(
-        name='Use Attribute', default=False,
+        name='Use Attribute', default=True,
         description='Use avr_malt_laplacian1.B instead of uniform value')
     # avr_malt_laplacian2: R=contribution, G=own_normal
     bpy.types.Mesh.malt_smooth_use_attr_contribution = bpy.props.BoolProperty(
-        name='Use Attribute', default=False,
+        name='Use Attribute', default=True,
         description='Use avr_malt_laplacian2.R instead of uniform value')
     bpy.types.Mesh.malt_smooth_use_attr_own_normal = bpy.props.BoolProperty(
-        name='Use Attribute', default=False,
+        name='Use Attribute', default=True,
         description='Use avr_malt_laplacian2.G instead of uniform value')
 
     # Tessellation toggle.
@@ -582,6 +585,7 @@ def register():
 
 def unregister():
     del bpy.types.Mesh.malt_compute_skin
+    del bpy.types.Mesh.malt_skin_vertex_group
     del bpy.types.Mesh.malt_compute_curvature
     del bpy.types.Mesh.malt_compute_smooth_normals
     del bpy.types.Mesh.malt_smooth_iterations

@@ -22,6 +22,7 @@ in mat4 MODEL[];
 in vec3 IO_BARYCENTRIC[];
 in float IO_TESS_STRENGTH[];
 in vec3 IO_TESS_NORMAL[];
+in float IO_TESS_DENSITY[];
 in vec3 IO_SMOOTHED_NORMAL[];
 
 layout(vertices = 3) out;
@@ -38,6 +39,7 @@ out mat4 TCS_MODEL[];
 out vec3 TCS_BARYCENTRIC[];
 out float TCS_TESS_STRENGTH[];
 out vec3 TCS_TESS_NORMAL[];
+out float TCS_TESS_DENSITY[];
 out vec3 TCS_SMOOTHED_NORMAL[];
 
 // Pass all per-vertex attributes from VS to TES.
@@ -54,6 +56,7 @@ out vec3 TCS_SMOOTHED_NORMAL[];
     TCS_BARYCENTRIC[gl_InvocationID] = IO_BARYCENTRIC[gl_InvocationID]; \
     TCS_TESS_STRENGTH[gl_InvocationID] = IO_TESS_STRENGTH[gl_InvocationID]; \
     TCS_TESS_NORMAL[gl_InvocationID] = IO_TESS_NORMAL[gl_InvocationID]; \
+    TCS_TESS_DENSITY[gl_InvocationID] = IO_TESS_DENSITY[gl_InvocationID]; \
     TCS_SMOOTHED_NORMAL[gl_InvocationID] = IO_SMOOTHED_NORMAL[gl_InvocationID];
 
 #endif // TESS_CONTROL_SHADER
@@ -76,6 +79,7 @@ in mat4 TCS_MODEL[];
 in vec3 TCS_BARYCENTRIC[];
 in float TCS_TESS_STRENGTH[];
 in vec3 TCS_TESS_NORMAL[];
+in float TCS_TESS_DENSITY[];
 in vec3 TCS_SMOOTHED_NORMAL[];
 
 // TES writes scalar outputs to FS (same names VS normally writes).
@@ -91,6 +95,7 @@ out mat4 MODEL;
 out vec3 IO_BARYCENTRIC;
 out float IO_TESS_STRENGTH;
 out vec3 IO_TESS_NORMAL;
+out float IO_TESS_DENSITY;
 out vec3 IO_SMOOTHED_NORMAL;
 
 // Interpolate all attributes using barycentric coordinates and write to IO outputs.
@@ -109,6 +114,7 @@ out vec3 IO_SMOOTHED_NORMAL;
     IO_BARYCENTRIC = gl_TessCoord; \
     IO_TESS_STRENGTH = TESS_INTERPOLATE_3(TCS_TESS_STRENGTH[0], TCS_TESS_STRENGTH[1], TCS_TESS_STRENGTH[2]); \
     IO_TESS_NORMAL = normalize(TESS_INTERPOLATE_3(TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2])); \
+    IO_TESS_DENSITY = TESS_INTERPOLATE_3(TCS_TESS_DENSITY[0], TCS_TESS_DENSITY[1], TCS_TESS_DENSITY[2]); \
     IO_SMOOTHED_NORMAL = normalize(TESS_INTERPOLATE_3(TCS_SMOOTHED_NORMAL[0], TCS_SMOOTHED_NORMAL[1], TCS_SMOOTHED_NORMAL[2]));
 
 // Phong tessellation: project interpolated position onto tangent planes at each

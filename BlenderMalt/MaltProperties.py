@@ -893,6 +893,9 @@ class MALT_PT_Mesh(MALT_PT_Base):
             box = layout.box()
             box.label(text='Compute Pipeline')
             box.prop(mesh, 'malt_compute_skin')
+            if mesh.malt_compute_skin:
+                skin_box = box.box()
+                skin_box.prop(mesh, 'malt_skin_vertex_group')
             box.prop(mesh, 'malt_compute_curvature')
             box.prop(mesh, 'malt_compute_smooth_normals')
 
@@ -934,7 +937,7 @@ class MALT_PT_Mesh(MALT_PT_Base):
                 sub.prop(mesh, 'malt_smooth_own_normal_strength')
                 row.prop(mesh, 'malt_smooth_use_attr_own_normal', text='Use Attribute')
 
-            # Tessellation toggle.
+            # Tessellation toggle and parameters.
             box = layout.box()
             box.label(text='Tessellation')
             box.prop(mesh, 'malt_tessellation')

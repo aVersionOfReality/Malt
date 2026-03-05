@@ -53,11 +53,12 @@ void COMMON_VERTEX_SHADER(inout Vertex V){}
 /* META
     @strength: default=0.75; min=0.0; max=1.0; doc=Amount of Phong displacement (0=flat, 1=full curvature);
     @normal: default_initialization=NORMAL; doc=Normal used for displacement projection. Override with a smooth normal to fix sharp edge gaps.;
+    @density: default=1.0; min=0.0; max=1.0; doc=Subdivision density multiplier (0=no subdivision, 1=full TESS_MAX_LEVEL). Controls how finely the mesh is tessellated.;
 */
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal);
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float density);
 
 #ifndef CUSTOM_TESSELLATION
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal){}
+void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float density){}
 #endif
 
 vec3 VERTEX_DISPLACEMENT_SHADER();
@@ -150,7 +151,8 @@ void main()
 
     TESS_STRENGTH = 0.75;
     TESS_NORMAL = NORMAL;
-    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL);
+    TESS_DENSITY = 1.0;
+    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL, TESS_DENSITY);
 
     VERTEX_SETUP_OUTPUT();
 }
@@ -180,10 +182,10 @@ void main()
         }
         else
         {
-            // Read density from SSBO for each corner.
-            float d0 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[0]].x : 1.0;
-            float d1 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[1]].x : 1.0;
-            float d2 = SSBO_ACTIVE[2] ? ssbo_data_2[IO_VERTEX_ID[2]].x : 1.0;
+            // Density comes from the vertex shader via IO varying.
+            float d0 = IO_TESS_DENSITY[0];
+            float d1 = IO_TESS_DENSITY[1];
+            float d2 = IO_TESS_DENSITY[2];
 
             // Per-edge level = average of endpoint densities * max level.
             // Outer[0] is the edge opposite vertex 0 (edge 1-2), etc.
