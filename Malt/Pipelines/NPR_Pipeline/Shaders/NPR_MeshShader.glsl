@@ -50,15 +50,22 @@ void COMMON_VERTEX_SHADER(inout Vertex V);
 void COMMON_VERTEX_SHADER(inout Vertex V){}
 #endif
 
-/* META
-    @strength: default=0.75; min=0.0; max=1.0; doc=Amount of Phong displacement (0=flat, 1=full curvature);
-    @normal: default_initialization=NORMAL; doc=Normal used for displacement projection. Override with a smooth normal to fix sharp edge gaps.;
-    @density: default=1.0; min=0.0; max=1.0; doc=Subdivision density multiplier (0=no subdivision, 1=full TESS_MAX_LEVEL). Controls how finely the mesh is tessellated.;
-*/
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float density);
+void TESSELLATION_SETTINGS(out int screen_space, out float dice_rate, out float density, inout vec3 displace_normal, out float displace_strength);
 
 #ifndef CUSTOM_TESSELLATION
-void TESSELLATION_SETTINGS(inout float strength, inout vec3 normal, inout float density){}
+/* META
+    @screen_space: subtype=ENUM(Off,On); default=0; doc=Use screen-space edge length for tessellation levels. Off uses density * max level instead.;
+    @dice_rate: default=64.0; min=0.1; max=128.0; doc=Target edge length in pixels. Lower values produce more triangles and sharper silhouettes.;
+    @density: default=1.0; subtype=Slider; min=0.0; max=1.0; doc=Subdivision density multiplier. Each 1 density = 1 subdivision level.;
+    @displace_normal: default_initialization=NORMAL; doc=Normal used for displacement projection. Override with a smooth normal to fix sharp edge gaps.;
+    @displace_strength: default=1.0; subtype=Slider; min=0.0; max=1.0; doc=Amount of Phong displacement (0=flat, 1=full curvature);
+*/
+void TESSELLATION_SETTINGS(out int screen_space, out float dice_rate, out float density, inout vec3 displace_normal, out float displace_strength){
+    screen_space = 0;
+    dice_rate = 64.0;
+    density = 1.0;
+    displace_strength = 1.0;
+}
 #endif
 
 vec3 VERTEX_DISPLACEMENT_SHADER();
@@ -149,10 +156,12 @@ void main()
     }
     #endif
 
-    TESS_STRENGTH = 0.75;
-    TESS_NORMAL = NORMAL;
+    TESS_SCREEN_SPACE = 0;
+    TESS_DICE_RATE = 64.0;
     TESS_DENSITY = 1.0;
-    TESSELLATION_SETTINGS(TESS_STRENGTH, TESS_NORMAL, TESS_DENSITY);
+    TESS_NORMAL = NORMAL;
+    TESS_STRENGTH = 1.0;
+    TESSELLATION_SETTINGS(TESS_SCREEN_SPACE, TESS_DICE_RATE, TESS_DENSITY, TESS_NORMAL, TESS_STRENGTH);
 
     VERTEX_SETUP_OUTPUT();
 }
@@ -163,8 +172,14 @@ void main()
 #ifdef TESS_CONTROL_SHADER
 #ifdef CUSTOM_TESSELLATION
 
-uniform float TESS_MAX_LEVEL = 4.0;
-uniform int TESS_DISABLED = 0;  // Set by Pipeline when mesh toggle is off.
+uniform float TESS_MAX_LEVEL = 64.0;
+uniform int TESS_DISABLED = 0;
+
+vec2 _world_to_screen_px(vec3 world_pos) {
+    vec4 clip = PROJECTION * CAMERA * vec4(world_pos, 1.0);
+    vec2 ndc = clip.xy / clip.w;
+    return (ndc * 0.5 + 0.5) * vec2(RESOLUTION);
+}
 
 void main()
 {
@@ -174,25 +189,42 @@ void main()
     {
         if (TESS_DISABLED != 0)
         {
-            // Pass-through: no subdivision.
             gl_TessLevelOuter[0] = 1.0;
             gl_TessLevelOuter[1] = 1.0;
             gl_TessLevelOuter[2] = 1.0;
             gl_TessLevelInner[0] = 1.0;
         }
-        else
+        else if (IO_TESS_SCREEN_SPACE[0] != 0)
         {
-            // Density comes from the vertex shader via IO varying.
+            vec2 s0 = _world_to_screen_px(IO_POSITION[0]);
+            vec2 s1 = _world_to_screen_px(IO_POSITION[1]);
+            vec2 s2 = _world_to_screen_px(IO_POSITION[2]);
+
+            float dice = max(0.1, (IO_TESS_DICE_RATE[0] + IO_TESS_DICE_RATE[1] + IO_TESS_DICE_RATE[2]) / 3.0);
+
+            float px_01 = length(s0 - s1);
+            float px_12 = length(s1 - s2);
+            float px_20 = length(s2 - s0);
+
             float d0 = IO_TESS_DENSITY[0];
             float d1 = IO_TESS_DENSITY[1];
             float d2 = IO_TESS_DENSITY[2];
 
-            // Per-edge level = average of endpoint densities * max level.
-            // Outer[0] is the edge opposite vertex 0 (edge 1-2), etc.
-            gl_TessLevelOuter[0] = max(1.0, mix(d1, d2, 0.5) * TESS_MAX_LEVEL);
-            gl_TessLevelOuter[1] = max(1.0, mix(d2, d0, 0.5) * TESS_MAX_LEVEL);
-            gl_TessLevelOuter[2] = max(1.0, mix(d0, d1, 0.5) * TESS_MAX_LEVEL);
-            gl_TessLevelInner[0] = max(1.0, (d0 + d1 + d2) / 3.0 * TESS_MAX_LEVEL);
+            gl_TessLevelOuter[0] = clamp((px_12 / dice) * mix(d1, d2, 0.5), 1.0, TESS_MAX_LEVEL);
+            gl_TessLevelOuter[1] = clamp((px_20 / dice) * mix(d2, d0, 0.5), 1.0, TESS_MAX_LEVEL);
+            gl_TessLevelOuter[2] = clamp((px_01 / dice) * mix(d0, d1, 0.5), 1.0, TESS_MAX_LEVEL);
+            gl_TessLevelInner[0] = clamp(
+                ((px_01 + px_12 + px_20) / (3.0 * dice)) * ((d0 + d1 + d2) / 3.0),
+                1.0, TESS_MAX_LEVEL);
+        }
+        else
+        {
+            float avg_density = (IO_TESS_DENSITY[0] + IO_TESS_DENSITY[1] + IO_TESS_DENSITY[2]) / 3.0;
+            float level = clamp(avg_density * 3.0, 1.0, TESS_MAX_LEVEL);
+            gl_TessLevelOuter[0] = level;
+            gl_TessLevelOuter[1] = level;
+            gl_TessLevelOuter[2] = level;
+            gl_TessLevelInner[0] = level;
         }
     }
 }

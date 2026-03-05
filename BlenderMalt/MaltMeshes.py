@@ -39,12 +39,15 @@ def _get_compute_requirements(object):
     has_smooth = getattr(mesh_data, 'malt_compute_smooth_normals', False)
     has_curvature = getattr(mesh_data, 'malt_compute_curvature', False)
     has_skin = getattr(mesh_data, 'malt_compute_skin', False)
-    if has_smooth or has_curvature:
+    has_delta_mush = getattr(mesh_data, 'malt_compute_delta_mush', False)
+    if has_smooth or has_curvature or has_delta_mush:
         reqs['smooth_data'] = 1
     if has_curvature:
         reqs['curvature_data'] = 1
     if has_skin:
         reqs['bone_data'] = 1
+    if has_delta_mush:
+        reqs['delta_mush_data'] = 1
     return reqs
 
 def load_mesh(object, name):
@@ -63,6 +66,7 @@ def load_mesh(object, name):
     # Curvature node needs adjacency CSR + cotangent weights, so imply smooth_data.
     needs_smooth = bool(compute_reqs.get('smooth_data', 0)) or needs_curvature
     needs_bones = bool(compute_reqs.get('bone_data', 0))
+    needs_delta_mush = bool(compute_reqs.get('delta_mush_data', 0))
 
     _t0 = _time.perf_counter()
     m.calc_loop_triangles()
@@ -360,15 +364,15 @@ def load_mesh(object, name):
 
     # Laplacian smooth per-corner weight attributes (face corner color, vec4).
     # Two attributes, matching the two smooth_weights SSBOs:
-    #   avr_malt_laplacian1: R=mix_factor, G=momentum, B=application, A=unused
-    #   avr_malt_laplacian2: R=contribution, G=own_normal, B=unused, A=unused
+    #   avr_malt_data1: R=mix_factor, G=momentum, B=application, A=unused
+    #   avr_malt_data2: R=contribution, G=own_normal, B=unused, A=delta_mush_strength
     # Accepts FLOAT_COLOR (vec4) or BYTE_COLOR (uint8 vec4).
     # The attributes may be created by Geometry Nodes (only on evaluated mesh).
     laplacian1_buf = None
     laplacian2_buf = None
     if needs_smooth:
-        for attr_name, buf_name in [('avr_malt_laplacian1', 'laplacian1'),
-                                     ('avr_malt_laplacian2', 'laplacian2')]:
+        for attr_name, buf_name in [('avr_malt_data1', 'laplacian1'),
+                                     ('avr_malt_data2', 'laplacian2')]:
             attr = m.attributes.get(attr_name)
             if attr and attr.domain == 'CORNER':
                 if attr.data_type == 'FLOAT_COLOR':
@@ -388,6 +392,125 @@ def load_mesh(object, name):
                         laplacian1_buf = buf
                     else:
                         laplacian2_buf = buf
+
+    # --- Delta Mush precomputation ---
+    # Smooth rest positions on CPU, build per-vertex tangent frames, compute
+    # tangent-space deltas.  Only runs when malt_compute_delta_mush is enabled.
+    dm_rest_deltas_buf = None
+    dm_precomp_iterations = 0
+    if needs_delta_mush and needs_smooth:
+        import math as _math
+        mesh_data_orig = object.original.data if object.original else object.data
+        dm_precomp_iterations = getattr(mesh_data_orig, 'malt_dm_iterations', 10)
+        dm_cot_factor = getattr(mesh_data_orig, 'malt_dm_cotangent_factor', 0.0)
+
+        # Extract adjacency CSR from the already-built out_adj buffer.
+        # Layout: [offsets (vertex_count+1)] [indices (adj_idx_count)]
+        adj_total_val_dm = out_adj_total.value
+        adj_idx_count_dm = out_adj_idx_count.value
+        adj_offsets = [out_adj[i] for i in range(vertex_count + 1)]
+        adj_indices = [out_adj[vertex_count + 1 + i] for i in range(adj_idx_count_dm)]
+        cot_weights = [out_cot[i] for i in range(adj_idx_count_dm)]
+
+        # Extract vert_corner CSR for first-corner-per-vertex lookup.
+        vc_total_dm = out_vc_total.value
+        vc_offsets = [out_vc[i] for i in range(vertex_count + 1)]
+        vc_indices = [out_vc[vertex_count + 1 + i] for i in range(vc_total_dm - (vertex_count + 1))]
+
+        # Extract per-vertex rest positions (take first corner of each vertex).
+        pos_ptr = ctypes.cast(rest_positions.buffer(), ctypes.POINTER(ctypes.c_float))
+        vert_pos = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+        for v in range(vertex_count):
+            c = vc_indices[vc_offsets[v]]  # first corner of vertex
+            vert_pos[v] = [pos_ptr[c * 4], pos_ptr[c * 4 + 1], pos_ptr[c * 4 + 2]]
+
+        # Extract per-vertex rest normals (from first corner).
+        norm_ptr = ctypes.cast(normals.buffer(), ctypes.POINTER(ctypes.c_float))
+        vert_norm = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+        for v in range(vertex_count):
+            c = vc_indices[vc_offsets[v]]
+            vert_norm[v] = [norm_ptr[c * 4], norm_ptr[c * 4 + 1], norm_ptr[c * 4 + 2]]
+
+        # CPU Laplacian smooth of rest positions (N iterations, ping-pong).
+        sm_a = [list(p) for p in vert_pos]  # working copy
+        sm_b = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+        for _iter in range(dm_precomp_iterations):
+            src, dst = (sm_a, sm_b) if _iter % 2 == 0 else (sm_b, sm_a)
+            for v in range(vertex_count):
+                start = adj_offsets[v]
+                end = adj_offsets[v + 1]
+                if start == end:
+                    dst[v] = list(src[v])
+                    continue
+                sx, sy, sz = 0.0, 0.0, 0.0
+                tw = 0.0
+                for i in range(start, end):
+                    nv = adj_indices[i]
+                    w = 1.0 + dm_cot_factor * (cot_weights[i] - 1.0) if dm_cot_factor > 0.0 else 1.0
+                    sx += src[nv][0] * w
+                    sy += src[nv][1] * w
+                    sz += src[nv][2] * w
+                    tw += w
+                if tw > 0.0:
+                    dst[v] = [sx / tw, sy / tw, sz / tw]
+                else:
+                    dst[v] = list(src[v])
+        smoothed_rest = sm_a if dm_precomp_iterations % 2 == 0 else sm_b
+
+        # Build per-vertex tangent frames from smoothed rest geometry + rest normals.
+        # Frame: N = rest normal, T = normalize(neighbor0_pos - pos), B = cross(N, T), T = cross(B, N)
+        def _normalize(v):
+            ln = _math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
+            if ln < 1e-12:
+                return [0.0, 0.0, 0.0]
+            return [v[0]/ln, v[1]/ln, v[2]/ln]
+
+        def _cross(a, b):
+            return [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]]
+
+        def _dot(a, b):
+            return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+        def _sub(a, b):
+            return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
+
+        # Compute tangent-space deltas.
+        dm_deltas = (ctypes.c_float * (vertex_count * 4))()
+        for v in range(vertex_count):
+            delta_world = _sub(vert_pos[v], smoothed_rest[v])
+            N = _normalize(vert_norm[v])
+            # Find first neighbor for tangent direction
+            start = adj_offsets[v]
+            end = adj_offsets[v + 1]
+            if start < end and (N[0] != 0.0 or N[1] != 0.0 or N[2] != 0.0):
+                nv = adj_indices[start]
+                T = _normalize(_sub(smoothed_rest[nv], smoothed_rest[v]))
+                # Gram-Schmidt orthogonalize T against N
+                d = _dot(T, N)
+                T = _normalize([T[0] - d*N[0], T[1] - d*N[1], T[2] - d*N[2]])
+                if T[0] == 0.0 and T[1] == 0.0 and T[2] == 0.0:
+                    # Degenerate: pass through delta in world space
+                    dm_deltas[v*4] = delta_world[0]
+                    dm_deltas[v*4+1] = delta_world[1]
+                    dm_deltas[v*4+2] = delta_world[2]
+                    dm_deltas[v*4+3] = 0.0
+                    continue
+                B = _cross(N, T)
+                T = _cross(B, N)
+                # Project delta into tangent space: [dot(delta, T), dot(delta, B), dot(delta, N)]
+                dm_deltas[v*4]   = _dot(delta_world, T)
+                dm_deltas[v*4+1] = _dot(delta_world, B)
+                dm_deltas[v*4+2] = _dot(delta_world, N)
+                dm_deltas[v*4+3] = 0.0
+            else:
+                # Isolated vertex or zero normal: pass through
+                dm_deltas[v*4]   = delta_world[0]
+                dm_deltas[v*4+1] = delta_world[1]
+                dm_deltas[v*4+2] = delta_world[2]
+                dm_deltas[v*4+3] = 0.0
+
+        dm_rest_deltas_buf = get_load_buffer('dm_rest_deltas', ctypes.c_float, vertex_count * 4)
+        ctypes.memmove(dm_rest_deltas_buf.buffer(), dm_deltas, vertex_count * 4 * ctypes.sizeof(ctypes.c_float))
 
     _t6 = _time.perf_counter()
     # Bone indices and weights for GPU skinning (per-vertex, max 4 influences).
@@ -481,6 +604,7 @@ def load_mesh(object, name):
         'bone_indices': bone_indices_buf,
         'bone_weights': bone_weights_buf,
         'bone_count': bone_count,
+        'dm_rest_deltas': dm_rest_deltas_buf,
     }
 
     from . import MaltPipeline
@@ -648,6 +772,21 @@ def register():
     bpy.types.Mesh.malt_skin_vertex_group = bpy.props.StringProperty(
         name='Vertex Group', default='',
         description='Vertex group to mask GPU skinning influence')
+    bpy.types.Mesh.malt_compute_delta_mush = bpy.props.BoolProperty(
+        name='Delta Mush', default=False,
+        description='Corrective smooth: preserve surface detail after skinning')
+    bpy.types.Mesh.malt_dm_iterations = bpy.props.IntProperty(
+        name='Iterations', default=10, min=0, max=200,
+        description='Laplacian smoothing iterations for delta mush')
+    bpy.types.Mesh.malt_dm_strength = bpy.props.FloatProperty(
+        name='Strength', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Blend between raw skinned (0) and delta-mush corrected (1)')
+    bpy.types.Mesh.malt_dm_use_attr_strength = bpy.props.BoolProperty(
+        name='Use Attribute', default=True,
+        description='Use avr_malt_data2.A instead of uniform value')
+    bpy.types.Mesh.malt_dm_cotangent_factor = bpy.props.FloatProperty(
+        name='Cotangent Factor', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Blend between uniform (0) and cotangent (1) weights for position smoothing')
     bpy.types.Mesh.malt_compute_curvature = bpy.props.BoolProperty(
         name='Curvature', default=False,
         description='Compute per-corner curvature for tessellation and shading')
@@ -685,23 +824,23 @@ def register():
         description='Respect smooth/sharp edge groups during smoothing')
 
     # Per-parameter attribute toggles.
-    # avr_malt_laplacian1: R=mix_factor, G=momentum, B=application
+    # avr_malt_data1: R=mix_factor, G=momentum, B=application
     bpy.types.Mesh.malt_smooth_use_attr_mix_factor = bpy.props.BoolProperty(
         name='Use Attribute', default=True,
-        description='Use avr_malt_laplacian1.R instead of uniform value')
+        description='Use avr_malt_data1.R instead of uniform value')
     bpy.types.Mesh.malt_smooth_use_attr_momentum = bpy.props.BoolProperty(
         name='Use Attribute', default=True,
-        description='Use avr_malt_laplacian1.G instead of uniform value')
+        description='Use avr_malt_data1.G instead of uniform value')
     bpy.types.Mesh.malt_smooth_use_attr_application = bpy.props.BoolProperty(
         name='Use Attribute', default=True,
-        description='Use avr_malt_laplacian1.B instead of uniform value')
-    # avr_malt_laplacian2: R=contribution, G=own_normal
+        description='Use avr_malt_data1.B instead of uniform value')
+    # avr_malt_data2: R=contribution, G=own_normal
     bpy.types.Mesh.malt_smooth_use_attr_contribution = bpy.props.BoolProperty(
         name='Use Attribute', default=True,
-        description='Use avr_malt_laplacian2.R instead of uniform value')
+        description='Use avr_malt_data2.R instead of uniform value')
     bpy.types.Mesh.malt_smooth_use_attr_own_normal = bpy.props.BoolProperty(
         name='Use Attribute', default=True,
-        description='Use avr_malt_laplacian2.G instead of uniform value')
+        description='Use avr_malt_data2.G instead of uniform value')
 
     # Tessellation toggle.
     bpy.types.Mesh.malt_tessellation = bpy.props.BoolProperty(
@@ -729,6 +868,11 @@ def register():
 def unregister():
     del bpy.types.Mesh.malt_compute_skin
     del bpy.types.Mesh.malt_skin_vertex_group
+    del bpy.types.Mesh.malt_compute_delta_mush
+    del bpy.types.Mesh.malt_dm_iterations
+    del bpy.types.Mesh.malt_dm_strength
+    del bpy.types.Mesh.malt_dm_use_attr_strength
+    del bpy.types.Mesh.malt_dm_cotangent_factor
     del bpy.types.Mesh.malt_compute_curvature
     del bpy.types.Mesh.malt_compute_smooth_normals
     del bpy.types.Mesh.malt_smooth_iterations

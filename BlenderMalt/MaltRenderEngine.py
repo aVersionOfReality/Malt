@@ -180,8 +180,14 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                         # this, toggling a feature off leaves stale params on
                         # the server-side mesh from the previous frame.
                         from Bridge.Proxys import ComputeShaderProxy
+                        compute_delta_mush = getattr(mesh_data, 'malt_compute_delta_mush', False)
                         compute_params = {
                             'compute_skin': compute_skin,
+                            'compute_delta_mush': compute_delta_mush,
+                            'dm_iterations': getattr(mesh_data, 'malt_dm_iterations', 10),
+                            'dm_strength': getattr(mesh_data, 'malt_dm_strength', 1.0),
+                            'dm_cotangent_factor': getattr(mesh_data, 'malt_dm_cotangent_factor', 1.0),
+                            'dm_use_attr_strength': getattr(mesh_data, 'malt_dm_use_attr_strength', True),
                             'compute_curvature': compute_curvature,
                             'compute_smooth_normals': compute_smooth,
                             'tessellation_enabled': tessellation_enabled,
@@ -190,7 +196,7 @@ class MaltRenderEngine(bpy.types.RenderEngine):
                             'smooth_quad_mode': getattr(mesh_data, 'malt_smooth_quad_mode', 0),
                             'smooth_groups_enabled': getattr(mesh_data, 'malt_smooth_groups_enabled', True),
                             # Varying parameters (uniform or per-corner attribute).
-                            # Order matches avr_malt_laplacian1/2 channel layout.
+                            # Order matches avr_malt_data1/2 channel layout.
                             'smooth_mix_factor': getattr(mesh_data, 'malt_smooth_mix_factor', 1.0),
                             'smooth_momentum_factor': getattr(mesh_data, 'malt_smooth_momentum_factor', 0.25),
                             'smooth_application_strength': getattr(mesh_data, 'malt_smooth_application_strength', 0.5),

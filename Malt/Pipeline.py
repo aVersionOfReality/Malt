@@ -163,7 +163,7 @@ class Pipeline():
             traceback.print_exc()
             return str(e)
     
-    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, fan_groups=None, cotangent_weights=None, edge_metadata=None, laplacian1=None, laplacian2=None, bone_indices=None, bone_weights=None, bone_count=0):
+    def load_mesh(self, position, indices, normal, tangent=None, uvs=[], colors=[], ssbo_colors=[None]*8, vertex_count=0, loop_count=0, rest_positions=None, rest_normals=None, corner_vert=None, adjacency_data=None, vert_corner_data=None, fan_groups=None, cotangent_weights=None, edge_metadata=None, laplacian1=None, laplacian2=None, bone_indices=None, bone_weights=None, bone_count=0, dm_rest_deltas=None):
         # Each parameter implements the Malt.Utils.IBuffer interface
         # Indices is an array of index buffers corresponding to each of the materials a mesh has
         # VBOs are shared for all the materials
@@ -345,6 +345,12 @@ class Pipeline():
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
             curvature_ssbo.size = curvature_size
 
+        # Delta Mush: per-vertex rest deltas in tangent space (precomputed, static).
+        dm_rest_deltas_ssbo = None
+        if dm_rest_deltas is not None:
+            dm_rest_deltas_ssbo = SSBO()
+            dm_rest_deltas_ssbo.load_raw(dm_rest_deltas.buffer(), dm_rest_deltas.size_in_bytes())
+
         results = []
 
         for i, index in enumerate(indices):
@@ -390,6 +396,7 @@ class Pipeline():
             result.bone_matrices_ssbo = bone_matrices_ssbo
             result.bone_count = bone_count
             result.curvature_ssbo = curvature_ssbo
+            result.dm_rest_deltas_ssbo = dm_rest_deltas_ssbo
 
             def bind_VBO(VBO, index, element_size, gl_type=GL_FLOAT, gl_normalize=GL_FALSE, stride=0):
                 glBindBuffer(GL_ARRAY_BUFFER, VBO[0])
@@ -558,6 +565,42 @@ class Pipeline():
             Pipeline._skin_kernel = ComputeShader(None)
         return Pipeline._skin_kernel
 
+    _dm_smooth_kernel = None
+
+    def _get_dm_smooth_kernel(self):
+        """Lazy-compile the Delta Mush position smoothing kernel."""
+        if Pipeline._dm_smooth_kernel is not None:
+            return Pipeline._dm_smooth_kernel
+        kernel_path = path.join(SHADER_DIR, 'ComputeKernels', 'Delta_Mush_Smooth_Kernel.glsl')
+        try:
+            with open(kernel_path) as f:
+                source = '#define COMPUTE_STAGE\n' + f.read()
+            Pipeline._dm_smooth_kernel = ComputeShader(source)
+            if Pipeline._dm_smooth_kernel.error:
+                LOG.error(f'DM SMOOTH KERNEL ERROR: {Pipeline._dm_smooth_kernel.error}')
+        except Exception as e:
+            LOG.error(f'Failed to load DM smooth kernel: {e}')
+            Pipeline._dm_smooth_kernel = ComputeShader(None)
+        return Pipeline._dm_smooth_kernel
+
+    _dm_apply_kernel = None
+
+    def _get_dm_apply_kernel(self):
+        """Lazy-compile the Delta Mush apply kernel."""
+        if Pipeline._dm_apply_kernel is not None:
+            return Pipeline._dm_apply_kernel
+        kernel_path = path.join(SHADER_DIR, 'ComputeKernels', 'Delta_Mush_Apply_Kernel.glsl')
+        try:
+            with open(kernel_path) as f:
+                source = '#define COMPUTE_STAGE\n' + f.read()
+            Pipeline._dm_apply_kernel = ComputeShader(source)
+            if Pipeline._dm_apply_kernel.error:
+                LOG.error(f'DM APPLY KERNEL ERROR: {Pipeline._dm_apply_kernel.error}')
+        except Exception as e:
+            LOG.error(f'Failed to load DM apply kernel: {e}')
+            Pipeline._dm_apply_kernel = ComputeShader(None)
+        return Pipeline._dm_apply_kernel
+
     def _bind_compute_ssbos(self, m):
         """Bind all compute-related SSBOs for the fixed pipeline."""
         # Core compute SSBOs (bindings 8–14, 16–24)
@@ -598,6 +641,8 @@ class Pipeline():
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 25, m.smooth_weights_2_ssbo.buffer[0])
         if getattr(m, 'smooth_prev_ssbo', None) is not None:
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 26, m.smooth_prev_ssbo.buffer[0])
+        if getattr(m, 'dm_rest_deltas_ssbo', None) is not None:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 27, m.dm_rest_deltas_ssbo.buffer[0])
 
     def _reset_buffers(self, m):
         """Reset working buffers from immutable rest buffers via GPU copy."""
@@ -651,9 +696,9 @@ class Pipeline():
     def _fill_smooth_weights(self, m, params):
         """Write smooth weight values to all corners in the two smooth_weights SSBOs.
 
-        SSBO 1 (binding 18, smooth_weights): maps to avr_malt_laplacian1
+        SSBO 1 (binding 18, smooth_weights): maps to avr_malt_data1
           .x = mix_factor,  .y = momentum_factor,  .z = application_strength,  .w = 0
-        SSBO 2 (binding 25, smooth_weights_2): maps to avr_malt_laplacian2
+        SSBO 2 (binding 25, smooth_weights_2): maps to avr_malt_data2
           .x = contribution_strength,  .y = own_normal_strength,  .z = 0,  .w = 0
 
         For each channel, use either the uniform value from params or the per-corner
@@ -678,33 +723,34 @@ class Pipeline():
         attr1 = getattr(m, 'laplacian1_data', None)
         any_attr1 = any(use_attr1) and attr1 is not None
 
-        # SSBO 2 channels: contribution, own_normal (indices 0,1 in vec4)
+        # SSBO 2 channels: contribution, own_normal, unused, dm_strength
+        dm_use_attr_strength = params.get('dm_use_attr_strength', False)
         uniform2 = [
             params.get('smooth_contribution_strength', 1.0),
             params.get('smooth_own_normal_strength', 1.0),
             0.0,  # unused .z
-            0.0,  # unused .w
+            params.get('dm_strength', 1.0),  # .w = delta mush strength
         ]
         use_attr2 = [
             params.get('use_attr_contribution', False),
             params.get('use_attr_own_normal', False),
             False,
-            False,
+            dm_use_attr_strength,  # .w from avr_malt_data2.A
         ]
         attr2 = getattr(m, 'laplacian2_data', None)
         any_attr2 = any(use_attr2) and attr2 is not None
 
         if (any(use_attr1) and attr1 is None) or (any(use_attr2) and attr2 is None):
-            if not getattr(self, '_warned_no_laplacian_attr', False):
+            if not getattr(self, '_warned_no_data_attr', False):
                 missing = []
                 if any(use_attr1) and attr1 is None:
-                    missing.append('avr_malt_laplacian1')
+                    missing.append('avr_malt_data1')
                 if any(use_attr2) and attr2 is None:
-                    missing.append('avr_malt_laplacian2')
+                    missing.append('avr_malt_data2')
                 print(f"[Pipeline] WARNING: 'Use Attribute' enabled but {', '.join(missing)} "
                       "data missing on mesh. Falling back to uniform values. "
                       "Refresh meshes to reload.")
-                self._warned_no_laplacian_attr = True
+                self._warned_no_data_attr = True
 
         n = m.loop_count
 
@@ -865,8 +911,83 @@ class Pipeline():
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         return True
 
+    def _run_delta_mush_step(self, m, params, workgroups):
+        """Delta Mush: smooth positions then reapply precomputed deltas."""
+        dm_rest_deltas_ssbo = getattr(m, 'dm_rest_deltas_ssbo', None)
+        if dm_rest_deltas_ssbo is None or m.smooth_scratch_ssbo is None:
+            return False
+
+        smooth_kernel = self._get_dm_smooth_kernel()
+        apply_kernel = self._get_dm_apply_kernel()
+        if smooth_kernel is None or smooth_kernel.error:
+            return False
+        if apply_kernel is None or apply_kernel.error:
+            return False
+
+        # Fill smooth_weights_2 (.w channel) for per-corner DM strength.
+        if params.get('dm_use_attr_strength', False):
+            self._fill_smooth_weights(m, params)
+
+        dm_iterations = params.get('dm_iterations', 10)
+        dm_strength = params.get('dm_strength', 1.0)
+        dm_cot_factor = params.get('dm_cotangent_factor', 0.0)
+
+        # Set smooth kernel uniforms.
+        if 'LOOP_COUNT' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+        if 'VERTEX_COUNT' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
+        if 'COTANGENT_FACTOR' in smooth_kernel.uniforms:
+            smooth_kernel.uniforms['COTANGENT_FACTOR'].set_value(dm_cot_factor)
+
+        # Ping-pong between deformed_positions (binding 9) and smooth_scratch (binding 15).
+        buf_a = m.deformed_position_buffer[0]  # binding 9
+        buf_b = m.smooth_scratch_ssbo.buffer[0]  # binding 15
+
+        for s_iter in range(dm_iterations):
+            if s_iter % 2 == 0:
+                src_buf, dst_buf = buf_a, buf_b
+            else:
+                src_buf, dst_buf = buf_b, buf_a
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, src_buf)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, dst_buf)
+            smooth_kernel.bind()
+            smooth_kernel.dispatch(workgroups)
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
+        # Ping-pong result location:
+        #   N odd  → last dst = buf_b → result in buf_b. Good.
+        #   N even → last dst = buf_a → result in buf_a. Copy to buf_b.
+        # Apply kernel reads from binding 15 (buf_b) and writes to binding 9.
+        if dm_iterations % 2 == 0:
+            glBindBuffer(GL_COPY_READ_BUFFER, buf_a)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buf_b)
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, m.smooth_scratch_ssbo.size)
+            glBindBuffer(GL_COPY_READ_BUFFER, 0)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
+        # Restore binding 9 to deformed_positions for the apply kernel to write to.
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, m.smooth_scratch_ssbo.buffer[0])
+
+        # Dispatch apply kernel.
+        if 'LOOP_COUNT' in apply_kernel.uniforms:
+            apply_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
+        if 'VERTEX_COUNT' in apply_kernel.uniforms:
+            apply_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
+        if 'STRENGTH' in apply_kernel.uniforms:
+            apply_kernel.uniforms['STRENGTH'].set_value(dm_strength)
+        dm_use_attr = params.get('dm_use_attr_strength', False)
+        if 'USE_ATTR_STRENGTH' in apply_kernel.uniforms:
+            apply_kernel.uniforms['USE_ATTR_STRENGTH'].set_value(1 if dm_use_attr else 0)
+
+        apply_kernel.bind()
+        apply_kernel.dispatch(workgroups)
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        return True
+
     def run_compute_pass(self, scene_batches):
-        """Fixed-order compute pipeline: Reset → Skin → Curvature → Smooth.
+        """Fixed-order compute pipeline: Reset → Skin → Delta Mush → Curvature → Smooth.
 
         Call this before draw_scene_pass(). Only dispatches once per frame.
         """
@@ -886,10 +1007,11 @@ class Pipeline():
                     continue
 
                 compute_skin = compute_params.get('compute_skin', False)
+                compute_delta_mush = compute_params.get('compute_delta_mush', False)
                 compute_curvature = compute_params.get('compute_curvature', False)
                 compute_smooth = compute_params.get('compute_smooth_normals', False)
 
-                if not compute_skin and not compute_curvature and not compute_smooth:
+                if not compute_skin and not compute_delta_mush and not compute_curvature and not compute_smooth:
                     continue
 
                 workgroup_size = 64
@@ -904,6 +1026,11 @@ class Pipeline():
                 # 2. Skinning (transforms positions + normals in-place).
                 if compute_skin:
                     self._run_skin_step(m, workgroups)
+                    any_dispatched = True
+
+                # 2.5. Delta Mush (smooth positions → reapply detail deltas).
+                if compute_delta_mush:
+                    self._run_delta_mush_step(m, compute_params, workgroups)
                     any_dispatched = True
 
                 # 3. Curvature (reads posed normals + positions → curvature_ssbo).

@@ -133,6 +133,7 @@ class MeshCustomLoad(Mesh):
         self.vert_corner_data_ssbo = None
         self.smooth_scratch_ssbo = None
         self.smoothed_normals_ssbo = None
+        self.dm_rest_deltas_ssbo = None
 
         self.index_count = 0
 

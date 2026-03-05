@@ -27,4 +27,5 @@ def load_mesh(pipeline, msg):
         bone_indices = data.get('bone_indices', None),
         bone_weights = data.get('bone_weights', None),
         bone_count = data.get('bone_count', 0),
+        dm_rest_deltas = data.get('dm_rest_deltas', None),
     )

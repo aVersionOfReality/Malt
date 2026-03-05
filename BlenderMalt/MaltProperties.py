@@ -896,6 +896,17 @@ class MALT_PT_Mesh(MALT_PT_Base):
             if mesh.malt_compute_skin:
                 skin_box = box.box()
                 skin_box.prop(mesh, 'malt_skin_vertex_group')
+            box.prop(mesh, 'malt_compute_delta_mush')
+            if mesh.malt_compute_delta_mush:
+                dm_box = box.box()
+                dm_box.label(text='Delta Mush (Corrective Smooth)')
+                dm_box.prop(mesh, 'malt_dm_cotangent_factor')
+                dm_box.prop(mesh, 'malt_dm_iterations')
+                row = dm_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_dm_use_attr_strength
+                sub.prop(mesh, 'malt_dm_strength')
+                row.prop(mesh, 'malt_dm_use_attr_strength', text='Use Attribute')
             box.prop(mesh, 'malt_compute_curvature')
             box.prop(mesh, 'malt_compute_smooth_normals')
 
@@ -909,7 +920,7 @@ class MALT_PT_Mesh(MALT_PT_Base):
                 row.prop(mesh, 'malt_smooth_cotangent_factor')
                 smooth_box.prop(mesh, 'malt_smooth_iterations')
                 # Varying parameters — each can use uniform or per-corner attribute.
-                # avr_malt_laplacian1: R=mix, G=momentum, B=application
+                # avr_malt_data1: R=mix, G=momentum, B=application
                 row = smooth_box.row(align=True)
                 sub = row.row(align=True)
                 sub.active = not mesh.malt_smooth_use_attr_mix_factor
@@ -925,7 +936,7 @@ class MALT_PT_Mesh(MALT_PT_Base):
                 sub.active = not mesh.malt_smooth_use_attr_application
                 sub.prop(mesh, 'malt_smooth_application_strength')
                 row.prop(mesh, 'malt_smooth_use_attr_application', text='Use Attribute')
-                # avr_malt_laplacian2: R=contribution, G=own_normal
+                # avr_malt_data2: R=contribution, G=own_normal
                 row = smooth_box.row(align=True)
                 sub = row.row(align=True)
                 sub.active = not mesh.malt_smooth_use_attr_contribution

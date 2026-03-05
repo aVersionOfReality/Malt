@@ -15,7 +15,7 @@ in vec3 IO_NORMAL[];
 in vec3 IO_TANGENT[];
 in vec3 IO_BITANGENT[];
 in vec2 IO_UV[][4];
-in vec4 IO_COLOR[][4];
+in vec4 IO_COLOR[][MAX_VERTEX_COLORS];
 flat in uvec4 IO_ID[];
 flat in int IO_VERTEX_ID[];
 in mat4 MODEL[];
@@ -23,6 +23,8 @@ in vec3 IO_BARYCENTRIC[];
 in float IO_TESS_STRENGTH[];
 in vec3 IO_TESS_NORMAL[];
 in float IO_TESS_DENSITY[];
+in float IO_TESS_DICE_RATE[];
+flat in int IO_TESS_SCREEN_SPACE[];
 in vec3 IO_SMOOTHED_NORMAL[];
 
 layout(vertices = 3) out;
@@ -32,7 +34,7 @@ out vec3 TCS_NORMAL[];
 out vec3 TCS_TANGENT[];
 out vec3 TCS_BITANGENT[];
 out vec2 TCS_UV[][4];
-out vec4 TCS_COLOR[][4];
+out vec4 TCS_COLOR[][MAX_VERTEX_COLORS];
 flat out uvec4 TCS_ID[];
 flat out int TCS_VERTEX_ID[];
 out mat4 TCS_MODEL[];
@@ -40,6 +42,8 @@ out vec3 TCS_BARYCENTRIC[];
 out float TCS_TESS_STRENGTH[];
 out vec3 TCS_TESS_NORMAL[];
 out float TCS_TESS_DENSITY[];
+out float TCS_TESS_DICE_RATE[];
+flat out int TCS_TESS_SCREEN_SPACE[];
 out vec3 TCS_SMOOTHED_NORMAL[];
 
 // Pass all per-vertex attributes from VS to TES.
@@ -57,6 +61,8 @@ out vec3 TCS_SMOOTHED_NORMAL[];
     TCS_TESS_STRENGTH[gl_InvocationID] = IO_TESS_STRENGTH[gl_InvocationID]; \
     TCS_TESS_NORMAL[gl_InvocationID] = IO_TESS_NORMAL[gl_InvocationID]; \
     TCS_TESS_DENSITY[gl_InvocationID] = IO_TESS_DENSITY[gl_InvocationID]; \
+    TCS_TESS_DICE_RATE[gl_InvocationID] = IO_TESS_DICE_RATE[gl_InvocationID]; \
+    TCS_TESS_SCREEN_SPACE[gl_InvocationID] = IO_TESS_SCREEN_SPACE[gl_InvocationID]; \
     TCS_SMOOTHED_NORMAL[gl_InvocationID] = IO_SMOOTHED_NORMAL[gl_InvocationID];
 
 #endif // TESS_CONTROL_SHADER
@@ -72,7 +78,7 @@ in vec3 TCS_NORMAL[];
 in vec3 TCS_TANGENT[];
 in vec3 TCS_BITANGENT[];
 in vec2 TCS_UV[][4];
-in vec4 TCS_COLOR[][4];
+in vec4 TCS_COLOR[][MAX_VERTEX_COLORS];
 flat in uvec4 TCS_ID[];
 flat in int TCS_VERTEX_ID[];
 in mat4 TCS_MODEL[];
@@ -80,6 +86,8 @@ in vec3 TCS_BARYCENTRIC[];
 in float TCS_TESS_STRENGTH[];
 in vec3 TCS_TESS_NORMAL[];
 in float TCS_TESS_DENSITY[];
+in float TCS_TESS_DICE_RATE[];
+flat in int TCS_TESS_SCREEN_SPACE[];
 in vec3 TCS_SMOOTHED_NORMAL[];
 
 // TES writes scalar outputs to FS (same names VS normally writes).
@@ -88,7 +96,7 @@ out vec3 IO_NORMAL;
 out vec3 IO_TANGENT;
 out vec3 IO_BITANGENT;
 out vec2 IO_UV[4];
-out vec4 IO_COLOR[4];
+out vec4 IO_COLOR[MAX_VERTEX_COLORS];
 flat out uvec4 IO_ID;
 flat out int IO_VERTEX_ID;
 out mat4 MODEL;
@@ -96,6 +104,8 @@ out vec3 IO_BARYCENTRIC;
 out float IO_TESS_STRENGTH;
 out vec3 IO_TESS_NORMAL;
 out float IO_TESS_DENSITY;
+out float IO_TESS_DICE_RATE;
+flat out int IO_TESS_SCREEN_SPACE;
 out vec3 IO_SMOOTHED_NORMAL;
 
 // Interpolate all attributes using barycentric coordinates and write to IO outputs.
@@ -106,6 +116,8 @@ out vec3 IO_SMOOTHED_NORMAL;
     IO_BITANGENT = normalize(TESS_INTERPOLATE_3(TCS_BITANGENT[0], TCS_BITANGENT[1], TCS_BITANGENT[2])); \
     for (int _i = 0; _i < 4; _i++) { \
         IO_UV[_i] = TESS_INTERPOLATE_3(TCS_UV[0][_i], TCS_UV[1][_i], TCS_UV[2][_i]); \
+    } \
+    for (int _i = 0; _i < MAX_VERTEX_COLORS; _i++) { \
         IO_COLOR[_i] = TESS_INTERPOLATE_3(TCS_COLOR[0][_i], TCS_COLOR[1][_i], TCS_COLOR[2][_i]); \
     } \
     IO_ID = TCS_ID[0]; \
@@ -115,6 +127,8 @@ out vec3 IO_SMOOTHED_NORMAL;
     IO_TESS_STRENGTH = TESS_INTERPOLATE_3(TCS_TESS_STRENGTH[0], TCS_TESS_STRENGTH[1], TCS_TESS_STRENGTH[2]); \
     IO_TESS_NORMAL = normalize(TESS_INTERPOLATE_3(TCS_TESS_NORMAL[0], TCS_TESS_NORMAL[1], TCS_TESS_NORMAL[2])); \
     IO_TESS_DENSITY = TESS_INTERPOLATE_3(TCS_TESS_DENSITY[0], TCS_TESS_DENSITY[1], TCS_TESS_DENSITY[2]); \
+    IO_TESS_DICE_RATE = TESS_INTERPOLATE_3(TCS_TESS_DICE_RATE[0], TCS_TESS_DICE_RATE[1], TCS_TESS_DICE_RATE[2]); \
+    IO_TESS_SCREEN_SPACE = TCS_TESS_SCREEN_SPACE[0]; \
     IO_SMOOTHED_NORMAL = normalize(TESS_INTERPOLATE_3(TCS_SMOOTHED_NORMAL[0], TCS_SMOOTHED_NORMAL[1], TCS_SMOOTHED_NORMAL[2]));
 
 // Phong tessellation: project interpolated position onto tangent planes at each

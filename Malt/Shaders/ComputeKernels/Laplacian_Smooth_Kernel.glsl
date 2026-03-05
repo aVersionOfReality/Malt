@@ -10,9 +10,9 @@
 // value using APPLICATION_STRENGTH.  The result is normalized and scattered.
 //
 // Per-corner weight parameters are split across two SSBOs that mirror the two
-// face-corner color attributes (avr_malt_laplacian1, avr_malt_laplacian2):
+// face-corner color attributes (avr_malt_data1, avr_malt_data2):
 //
-//   smooth_weights (binding 18, vec4[]) — maps to avr_malt_laplacian1:
+//   smooth_weights (binding 18, vec4[]) — maps to avr_malt_data1:
 //     .x = mix_factor: post-all-iterations blend between rest normal and
 //          smoothed result (0 = rest, 1 = fully smoothed).
 //     .y = momentum_factor: velocity-based smoothing momentum (0 = none,
@@ -20,7 +20,7 @@
 //     .z = application_strength: per-iteration blend (0 = no change, 1 = full)
 //     .w = (unused)
 //
-//   smooth_weights_2 (binding 25, vec4[]) — maps to avr_malt_laplacian2:
+//   smooth_weights_2 (binding 25, vec4[]) — maps to avr_malt_data2:
 //     .x = contribution_strength: scales neighbor values during gather
 //     .y = own_normal_strength: scales a corner's normal everywhere it appears
 //     .z = (unused)
@@ -70,9 +70,9 @@ layout(std430, binding = 22) readonly buffer FAN_GROUPS { int fan_groups_buf[]; 
 // Rest normals for post-iteration mix (binding 12, already bound by Pipeline).
 layout(std430, binding = 12) readonly buffer REST_NORMALS { vec4 rest_normals_buf[]; };
 
-// Per-corner weight parameters — maps to avr_malt_laplacian1.
+// Per-corner weight parameters — maps to avr_malt_data1.
 layout(std430, binding = 18) readonly buffer SMOOTH_WEIGHTS { vec4 smooth_weights[]; };
-// Per-corner weight parameters — maps to avr_malt_laplacian2.
+// Per-corner weight parameters — maps to avr_malt_data2.
 layout(std430, binding = 25) readonly buffer SMOOTH_WEIGHTS_2 { vec4 smooth_weights_2[]; };
 
 // Previous iteration's result, for momentum.  Bound by Python to the
