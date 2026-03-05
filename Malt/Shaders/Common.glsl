@@ -1,6 +1,10 @@
 #ifndef COMMON_GLSL
 #define COMMON_GLSL
 
+#ifndef MAX_VERTEX_COLORS
+    #define MAX_VERTEX_COLORS 9
+#endif
+
 #ifdef VERTEX_SHADER
 #define vertex_out out
 #else
@@ -12,7 +16,7 @@ vec3 NORMAL;
 vec3 TANGENT;
 vec3 BITANGENT;
 vec2 UV[4];
-vec4 COLOR[4];
+vec4 COLOR[MAX_VERTEX_COLORS];
 uvec4 ID;
 float TESS_STRENGTH;
 vec3 TESS_NORMAL;
@@ -36,7 +40,7 @@ layout(std140) uniform COMMON_UNIFORMS
 uniform bool MIRROR_SCALE = false;
 uniform bool PRECOMPUTED_TANGENTS = false;
 
-uniform bvec4 COLOR_IS_SRGB = bvec4(false);
+uniform uint COLOR_IS_SRGB = 0u;
 
 #ifndef MAX_BATCH_SIZE
     // Assume at least 64kb of UBO storage (d3d11 requirement) and max element size of mat4
@@ -86,7 +90,7 @@ vertex_out vec3 IO_NORMAL;
 vertex_out vec3 IO_TANGENT;
 vertex_out vec3 IO_BITANGENT;
 vertex_out vec2 IO_UV[4];
-vertex_out vec4 IO_COLOR[4];
+vertex_out vec4 IO_COLOR[MAX_VERTEX_COLORS];
 flat vertex_out uvec4 IO_ID;
 vertex_out vec3 IO_BARYCENTRIC;
 vertex_out float IO_TESS_STRENGTH;
@@ -119,6 +123,11 @@ layout (location = 7) in vec4 in_color0;
 layout (location = 8) in vec4 in_color1;
 layout (location = 9) in vec4 in_color2;
 layout (location = 10) in vec4 in_color3;
+layout (location = 11) in vec4 in_color4;
+layout (location = 12) in vec4 in_color5;
+layout (location = 13) in vec4 in_color6;
+layout (location = 14) in vec4 in_color7;
+layout (location = 15) in vec4 in_color8;
 
 void VERTEX_SETUP_OUTPUT()
 {
@@ -175,10 +184,15 @@ void DEFAULT_VERTEX_SHADER()
     COLOR[1]=in_color1;
     COLOR[2]=in_color2;
     COLOR[3]=in_color3;
+    COLOR[4]=in_color4;
+    COLOR[5]=in_color5;
+    COLOR[6]=in_color6;
+    COLOR[7]=in_color7;
+    COLOR[8]=in_color8;
 
-    for(int i = 0; i < 4; i++)
+    for(int i = 0; i < MAX_VERTEX_COLORS; i++)
     {
-        if(COLOR_IS_SRGB[i])
+        if((COLOR_IS_SRGB & (1u << i)) != 0u)
         {
             COLOR[i].rgb = srgb_to_linear(COLOR[i].rgb);
         }

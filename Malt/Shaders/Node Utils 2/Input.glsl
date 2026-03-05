@@ -146,7 +146,7 @@ void Tangent_Procedural_UV(
 #ifndef NO_VERTEX_COLOR_INPUT
 
 /*  META
-    @Index: min=0; max=3;
+    @Index: min=0; max=8;
     @uv: label=UV;
 */
 void Vertex_Color(
