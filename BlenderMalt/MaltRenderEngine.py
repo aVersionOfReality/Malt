@@ -14,8 +14,10 @@ from . import MaltPipeline, MaltMeshes, MaltMaterial, CBlenderMalt
 CAPTURE = False
 
 def _find_armature_blender(obj):
-    """Find the armature object from the 'malt_armature' custom property."""
-    arm_obj = obj.get('malt_armature')
+    """Find the armature object from the malt_armature property."""
+    arm_obj = getattr(obj, 'malt_armature', None)
+    if arm_obj is None:
+        arm_obj = obj.get('malt_armature')  # legacy fallback
     if arm_obj is not None and hasattr(arm_obj, 'type') and arm_obj.type == 'ARMATURE':
         return arm_obj
     return None

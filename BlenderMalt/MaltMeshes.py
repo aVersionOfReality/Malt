@@ -18,9 +18,11 @@ def get_mesh(object):
     return MESHES[key]
 
 def _find_armature(object):
-    """Find the armature associated with an object via the 'malt_armature' custom property.
+    """Find the armature associated with an object via the malt_armature property.
     Returns the armature object, or None if not set or not an armature."""
-    arm_obj = object.get('malt_armature')
+    arm_obj = getattr(object, 'malt_armature', None)
+    if arm_obj is None:
+        arm_obj = object.get('malt_armature')  # legacy fallback
     if arm_obj is not None and hasattr(arm_obj, 'type') and arm_obj.type == 'ARMATURE':
         return arm_obj
     return None
@@ -836,8 +838,24 @@ def draw_vertex_color_overrides(self, context):
 def _vcol_override_update(self, context):
     unload_mesh_data(self)
 
+def _on_malt_armature_update(self, context):
+    """Sync the registered PointerProperty to the raw custom property
+    so that both old and new code paths find the armature."""
+    arm = self.malt_armature
+    if arm is not None:
+        self['malt_armature'] = arm
+    elif 'malt_armature' in self:
+        del self['malt_armature']
+
 def register():
     # Compute pipeline enable/disable toggles.
+    bpy.types.Object.malt_armature = bpy.props.PointerProperty(
+        type=bpy.types.Object,
+        name='GPU Armature',
+        description='Armature for GPU Linear Blend Skinning',
+        poll=lambda self, obj: obj.type == 'ARMATURE',
+        update=_on_malt_armature_update,
+    )
     bpy.types.Mesh.malt_compute_skin = bpy.props.BoolProperty(
         name='GPU Skinning', default=False,
         description='Enable GPU Linear Blend Skinning')
@@ -944,6 +962,7 @@ def register():
 
 
 def unregister():
+    del bpy.types.Object.malt_armature
     del bpy.types.Mesh.malt_compute_skin
     del bpy.types.Mesh.malt_skin_vertex_group
     del bpy.types.Mesh.malt_compute_delta_mush

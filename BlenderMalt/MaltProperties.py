@@ -983,6 +983,23 @@ class MALT_PT_Light(MALT_PT_Base):
             owner.malt.draw_ui(layout)
             owner.malt_parameters.draw_ui(layout)
 
+class MALT_PT_GPU_Armature(bpy.types.Panel):
+    bl_idname = "OBJECT_PT_malt_gpu_armature"
+    bl_label = "GPU Armature - Always runs last"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "modifier"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == 'MESH'
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.object
+        layout.prop(obj, 'malt_armature', text='Armature')
+
 classes = (
     MaltBoolPropertyWrapper,
     MaltEnumPropertyWrapper,
@@ -999,6 +1016,7 @@ classes = (
     MALT_PT_Object,
     MALT_PT_Mesh,
     MALT_PT_Light,
+    MALT_PT_GPU_Armature,
 )
 
 def register():
