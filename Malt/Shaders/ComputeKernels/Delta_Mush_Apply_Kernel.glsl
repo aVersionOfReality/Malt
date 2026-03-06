@@ -28,14 +28,20 @@ layout(std430, binding = 11) readonly buffer NORMALS { vec4 normals_buf[]; };
 layout(std430, binding = 13) readonly buffer ADJACENCY_DATA { int adjacency_data[]; };
 layout(std430, binding = 14) readonly buffer VERT_CORNER_DATA { int vert_corner_data[]; };
 
+// Original skinned positions (saved before smoothing).
+layout(std430, binding = 26) readonly buffer SKINNED_POSITIONS { vec4 skinned_positions[]; };
+
 // Per-corner weight parameters — avr_malt_data2.
-// .w (A channel) = delta mush strength when USE_ATTR_STRENGTH is enabled.
+// .z (B channel) = delta mush factor when USE_ATTR_FACTOR is enabled.
+// .w (A channel) = delta mush scale when USE_ATTR_SCALE is enabled.
 layout(std430, binding = 25) readonly buffer SMOOTH_WEIGHTS_2 { vec4 smooth_weights_2[]; };
 
 uniform uint LOOP_COUNT = 0u;
 uniform uint VERTEX_COUNT = 0u;
-uniform float STRENGTH = 1.0;      // 0 = raw skinned, 1 = fully corrected
-uniform int USE_ATTR_STRENGTH = 0;  // 1 = read strength from avr_malt_data2.A per corner
+uniform float FACTOR = 1.0;       // 0 = unsmoothed, 1 = fully smoothed positions
+uniform int USE_ATTR_FACTOR = 0;  // 1 = read factor from avr_malt_data2.B per corner
+uniform float SCALE = 1.0;        // 0 = raw skinned, 1 = fully corrected
+uniform int USE_ATTR_SCALE = 0;   // 1 = read scale from avr_malt_data2.A per corner
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -43,13 +49,13 @@ void main() {
 
     int vert = corner_vert[idx];
 
-    vec3 smoothed_pos = smoothed_deformed[idx].xyz;
+    vec3 fully_smoothed_pos = smoothed_deformed[idx].xyz;
     vec3 tangent_delta = rest_deltas[vert].xyz;
 
     // Build tangent frame from smoothed deformed geometry.
     vec3 N = normalize(normals_buf[idx].xyz);
 
-    // Compute the corrected position (before strength blend).
+    // Compute the corrected position (before factor/scale blend).
     int adj_start = adjacency_data[vert];
     int adj_end   = adjacency_data[vert + 1];
 
@@ -61,7 +67,7 @@ void main() {
         int neighbor_corner = vert_corner_data[vc_base + vert_corner_data[neighbor_vert]];
         vec3 neighbor_pos = smoothed_deformed[neighbor_corner].xyz;
 
-        vec3 T = normalize(neighbor_pos - smoothed_pos);
+        vec3 T = normalize(neighbor_pos - fully_smoothed_pos);
         // Gram-Schmidt orthogonalize T against N.
         T = T - dot(T, N) * N;
         float T_len = length(T);
@@ -73,23 +79,28 @@ void main() {
 
             // Transform delta from tangent space to world space.
             vec3 world_delta = tangent_delta.x * T + tangent_delta.y * B + tangent_delta.z * N;
-            corrected_pos = smoothed_pos + world_delta;
+            corrected_pos = fully_smoothed_pos + world_delta;
         } else {
-            corrected_pos = smoothed_pos + tangent_delta;
+            corrected_pos = fully_smoothed_pos + tangent_delta;
         }
     } else {
-        corrected_pos = smoothed_pos + tangent_delta;
+        corrected_pos = fully_smoothed_pos + tangent_delta;
     }
 
-    // Scatter to all corners of this vertex, applying per-corner strength.
+    // Scatter to all corners of this vertex, applying per-corner factor and scale.
     int vc_base = int(VERTEX_COUNT) + 1;
     int my_start = vert_corner_data[vert];
     int my_end   = vert_corner_data[vert + 1];
     for (int i = my_start; i < my_end; i++) {
         int corner = vert_corner_data[vc_base + i];
-        float s = (USE_ATTR_STRENGTH != 0) ? smooth_weights_2[corner].w : STRENGTH;
-        vec3 original_pos = deformed_positions[corner].xyz;
-        deformed_positions[corner] = vec4(mix(original_pos, corrected_pos, s), 0.0);
+        vec4 w = smooth_weights_2[corner];
+        float f = (USE_ATTR_FACTOR != 0) ? w.z : FACTOR;
+        float s = (USE_ATTR_SCALE != 0) ? w.w : SCALE;
+        vec3 skinned_pos = skinned_positions[corner].xyz;
+        // Factor: blend between skinned and fully corrected position.
+        vec3 factored_pos = mix(skinned_pos, corrected_pos, f);
+        // Scale: blend between skinned and factored result.
+        deformed_positions[corner] = vec4(mix(skinned_pos, factored_pos, s), 0.0);
     }
 }
 

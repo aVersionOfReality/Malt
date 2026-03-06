@@ -326,11 +326,34 @@ def load_mesh(object, name):
         # Pass normals (vec4-padded) for fan group computation from normal similarity.
         normals_ptr = ctypes.cast(normals.buffer(), ctypes.POINTER(ctypes.c_float))
 
+        # When GPU skinning is off and avr_malt_rest_position exists, use rest
+        # positions for cotangent weight computation so they match the CPU
+        # precomputation (which smooths rest positions, not deformed ones).
+        smooth_positions_ptr = ctypes.cast(positions.buffer(), ctypes.POINTER(ctypes.c_float))
+        _dm_rest_pos_vec3 = None
+        if needs_delta_mush and not needs_bones:
+            _rest_attr = m.attributes.get('avr_malt_rest_position')
+            if _rest_attr is not None and _rest_attr.domain == 'CORNER':
+                if _rest_attr.data_type == 'FLOAT_VECTOR':
+                    _dm_rest_pos_vec3 = (ctypes.c_float * (loop_count * 3)).from_address(
+                        _rest_attr.data[0].as_pointer())
+                    smooth_positions_ptr = ctypes.cast(_dm_rest_pos_vec3, ctypes.POINTER(ctypes.c_float))
+                elif _rest_attr.data_type == 'FLOAT_COLOR':
+                    # FLOAT_COLOR is vec4 — strip w to produce vec3.
+                    _rest_src4 = (ctypes.c_float * (loop_count * 4)).from_address(
+                        _rest_attr.data[0].as_pointer())
+                    _dm_rest_pos_vec3 = (ctypes.c_float * (loop_count * 3))()
+                    for _j in range(loop_count):
+                        _dm_rest_pos_vec3[_j*3]   = _rest_src4[_j*4]
+                        _dm_rest_pos_vec3[_j*3+1] = _rest_src4[_j*4+1]
+                        _dm_rest_pos_vec3[_j*3+2] = _rest_src4[_j*4+2]
+                    smooth_positions_ptr = ctypes.cast(_dm_rest_pos_vec3, ctypes.POINTER(ctypes.c_float))
+
         CBlenderMalt.build_smooth_data(
             c_edges, _ec,
             cv_ptr, loop_count,
             c_poly_ls, c_poly_lt, _pc,
-            ctypes.cast(positions.buffer(), ctypes.POINTER(ctypes.c_float)),
+            smooth_positions_ptr,
             c_tri_loops, _tc,
             normals_ptr,
             vertex_count,
@@ -365,7 +388,7 @@ def load_mesh(object, name):
     # Laplacian smooth per-corner weight attributes (face corner color, vec4).
     # Two attributes, matching the two smooth_weights SSBOs:
     #   avr_malt_data1: R=mix_factor, G=momentum, B=application, A=unused
-    #   avr_malt_data2: R=contribution, G=own_normal, B=unused, A=delta_mush_strength
+    #   avr_malt_data2: R=contribution, G=own_normal, B=delta_mush_factor, A=delta_mush_scale
     # Accepts FLOAT_COLOR (vec4) or BYTE_COLOR (uint8 vec4).
     # The attributes may be created by Geometry Nodes (only on evaluated mesh).
     laplacian1_buf = None
@@ -418,18 +441,67 @@ def load_mesh(object, name):
         vc_indices = [out_vc[vertex_count + 1 + i] for i in range(vc_total_dm - (vertex_count + 1))]
 
         # Extract per-vertex rest positions (take first corner of each vertex).
-        pos_ptr = ctypes.cast(rest_positions.buffer(), ctypes.POINTER(ctypes.c_float))
-        vert_pos = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
-        for v in range(vertex_count):
-            c = vc_indices[vc_offsets[v]]  # first corner of vertex
-            vert_pos[v] = [pos_ptr[c * 4], pos_ptr[c * 4 + 1], pos_ptr[c * 4 + 2]]
+        # When GPU skinning is off and avr_malt_rest_position exists, the mesh is
+        # already CPU-deformed — use the attribute for rest and the mesh for deformed.
+        rest_attr = m.attributes.get('avr_malt_rest_position')
+        use_rest_attr = (not needs_bones) and rest_attr is not None and rest_attr.domain == 'CORNER'
+        if use_rest_attr:
+            if rest_attr.data_type == 'FLOAT_VECTOR':
+                rest_src = (ctypes.c_float * (loop_count * 3)).from_address(rest_attr.data[0].as_pointer())
+                stride = 3
+            elif rest_attr.data_type == 'FLOAT_COLOR':
+                rest_src = (ctypes.c_float * (loop_count * 4)).from_address(rest_attr.data[0].as_pointer())
+                stride = 4
+            else:
+                use_rest_attr = False
 
-        # Extract per-vertex rest normals (from first corner).
-        norm_ptr = ctypes.cast(normals.buffer(), ctypes.POINTER(ctypes.c_float))
-        vert_norm = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
-        for v in range(vertex_count):
-            c = vc_indices[vc_offsets[v]]
-            vert_norm[v] = [norm_ptr[c * 4], norm_ptr[c * 4 + 1], norm_ptr[c * 4 + 2]]
+        if use_rest_attr:
+            vert_pos = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+            for v in range(vertex_count):
+                c = vc_indices[vc_offsets[v]]
+                vert_pos[v] = [rest_src[c * stride], rest_src[c * stride + 1], rest_src[c * stride + 2]]
+        else:
+            pos_ptr = ctypes.cast(rest_positions.buffer(), ctypes.POINTER(ctypes.c_float))
+            vert_pos = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+            for v in range(vertex_count):
+                c = vc_indices[vc_offsets[v]]  # first corner of vertex
+                vert_pos[v] = [pos_ptr[c * 4], pos_ptr[c * 4 + 1], pos_ptr[c * 4 + 2]]
+
+        # Extract per-vertex rest normals.
+        # When using the rest position attribute, compute normals from rest geometry
+        # (area-weighted face normals) so the tangent frame matches rest positions.
+        if use_rest_attr:
+            vert_norm = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+            cv_src = ctypes.cast(corner_vert.buffer(), ctypes.POINTER(ctypes.c_int))
+            for p in range(_pc):
+                ls = c_poly_ls[p]
+                lt = c_poly_lt[p]
+                if lt < 3:
+                    continue
+                v0 = cv_src[ls]
+                v1 = cv_src[ls + 1]
+                v2 = cv_src[ls + 2]
+                p0, p1, p2 = vert_pos[v0], vert_pos[v1], vert_pos[v2]
+                e1 = [p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]]
+                e2 = [p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]]
+                nx = e1[1]*e2[2] - e1[2]*e2[1]
+                ny = e1[2]*e2[0] - e1[0]*e2[2]
+                nz = e1[0]*e2[1] - e1[1]*e2[0]
+                for li in range(lt):
+                    v = cv_src[ls + li]
+                    vert_norm[v][0] += nx
+                    vert_norm[v][1] += ny
+                    vert_norm[v][2] += nz
+            for v in range(vertex_count):
+                ln = _math.sqrt(vert_norm[v][0]**2 + vert_norm[v][1]**2 + vert_norm[v][2]**2)
+                if ln > 1e-12:
+                    vert_norm[v] = [vert_norm[v][0]/ln, vert_norm[v][1]/ln, vert_norm[v][2]/ln]
+        else:
+            norm_ptr = ctypes.cast(normals.buffer(), ctypes.POINTER(ctypes.c_float))
+            vert_norm = [[0.0, 0.0, 0.0] for _ in range(vertex_count)]
+            for v in range(vertex_count):
+                c = vc_indices[vc_offsets[v]]
+                vert_norm[v] = [norm_ptr[c * 4], norm_ptr[c * 4 + 1], norm_ptr[c * 4 + 2]]
 
         # CPU Laplacian smooth of rest positions (N iterations, ping-pong).
         sm_a = [list(p) for p in vert_pos]  # working copy
@@ -770,18 +842,24 @@ def register():
         name='GPU Skinning', default=False,
         description='Enable GPU Linear Blend Skinning')
     bpy.types.Mesh.malt_skin_vertex_group = bpy.props.StringProperty(
-        name='Vertex Group', default='',
+        name='Vertex Group Mask', default='',
         description='Vertex group to mask GPU skinning influence')
     bpy.types.Mesh.malt_compute_delta_mush = bpy.props.BoolProperty(
         name='Delta Mush', default=False,
         description='Corrective smooth: preserve surface detail after skinning')
     bpy.types.Mesh.malt_dm_iterations = bpy.props.IntProperty(
-        name='Iterations', default=10, min=0, max=200,
+        name='Iterations', default=5, min=0, max=200,
         description='Laplacian smoothing iterations for delta mush')
-    bpy.types.Mesh.malt_dm_strength = bpy.props.FloatProperty(
-        name='Strength', default=1.0, soft_min=0.0, soft_max=1.0,
+    bpy.types.Mesh.malt_dm_factor = bpy.props.FloatProperty(
+        name='Factor', default=1.0, soft_min=0.0, soft_max=1.0,
+        description='Blend between unsmoothed (0) and smoothed (1) positions')
+    bpy.types.Mesh.malt_dm_use_attr_factor = bpy.props.BoolProperty(
+        name='Use Attribute', default=True,
+        description='Use avr_malt_data2.B instead of uniform value')
+    bpy.types.Mesh.malt_dm_scale = bpy.props.FloatProperty(
+        name='Scale', default=1.0, soft_min=0.0, soft_max=1.0,
         description='Blend between raw skinned (0) and delta-mush corrected (1)')
-    bpy.types.Mesh.malt_dm_use_attr_strength = bpy.props.BoolProperty(
+    bpy.types.Mesh.malt_dm_use_attr_scale = bpy.props.BoolProperty(
         name='Use Attribute', default=True,
         description='Use avr_malt_data2.A instead of uniform value')
     bpy.types.Mesh.malt_dm_cotangent_factor = bpy.props.FloatProperty(
@@ -870,8 +948,10 @@ def unregister():
     del bpy.types.Mesh.malt_skin_vertex_group
     del bpy.types.Mesh.malt_compute_delta_mush
     del bpy.types.Mesh.malt_dm_iterations
-    del bpy.types.Mesh.malt_dm_strength
-    del bpy.types.Mesh.malt_dm_use_attr_strength
+    del bpy.types.Mesh.malt_dm_factor
+    del bpy.types.Mesh.malt_dm_use_attr_factor
+    del bpy.types.Mesh.malt_dm_scale
+    del bpy.types.Mesh.malt_dm_use_attr_scale
     del bpy.types.Mesh.malt_dm_cotangent_factor
     del bpy.types.Mesh.malt_compute_curvature
     del bpy.types.Mesh.malt_compute_smooth_normals

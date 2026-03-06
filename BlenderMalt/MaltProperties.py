@@ -904,9 +904,14 @@ class MALT_PT_Mesh(MALT_PT_Base):
                 dm_box.prop(mesh, 'malt_dm_iterations')
                 row = dm_box.row(align=True)
                 sub = row.row(align=True)
-                sub.active = not mesh.malt_dm_use_attr_strength
-                sub.prop(mesh, 'malt_dm_strength')
-                row.prop(mesh, 'malt_dm_use_attr_strength', text='Use Attribute')
+                sub.active = not mesh.malt_dm_use_attr_factor
+                sub.prop(mesh, 'malt_dm_factor')
+                row.prop(mesh, 'malt_dm_use_attr_factor', text='Use Attribute')
+                row = dm_box.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not mesh.malt_dm_use_attr_scale
+                sub.prop(mesh, 'malt_dm_scale')
+                row.prop(mesh, 'malt_dm_use_attr_scale', text='Use Attribute')
             box.prop(mesh, 'malt_compute_curvature')
             box.prop(mesh, 'malt_compute_smooth_normals')
 

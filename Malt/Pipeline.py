@@ -723,19 +723,20 @@ class Pipeline():
         attr1 = getattr(m, 'laplacian1_data', None)
         any_attr1 = any(use_attr1) and attr1 is not None
 
-        # SSBO 2 channels: contribution, own_normal, unused, dm_strength
-        dm_use_attr_strength = params.get('dm_use_attr_strength', False)
+        # SSBO 2 channels: contribution, own_normal, dm_factor, dm_scale
+        dm_use_attr_factor = params.get('dm_use_attr_factor', False)
+        dm_use_attr_scale = params.get('dm_use_attr_scale', False)
         uniform2 = [
             params.get('smooth_contribution_strength', 1.0),
             params.get('smooth_own_normal_strength', 1.0),
-            0.0,  # unused .z
-            params.get('dm_strength', 1.0),  # .w = delta mush strength
+            params.get('dm_factor', 1.0),  # .z = delta mush factor
+            params.get('dm_scale', 1.0),  # .w = delta mush scale
         ]
         use_attr2 = [
             params.get('use_attr_contribution', False),
             params.get('use_attr_own_normal', False),
-            False,
-            dm_use_attr_strength,  # .w from avr_malt_data2.A
+            dm_use_attr_factor,  # .z from avr_malt_data2.B
+            dm_use_attr_scale,  # .w from avr_malt_data2.A
         ]
         attr2 = getattr(m, 'laplacian2_data', None)
         any_attr2 = any(use_attr2) and attr2 is not None
@@ -924,12 +925,13 @@ class Pipeline():
         if apply_kernel is None or apply_kernel.error:
             return False
 
-        # Fill smooth_weights_2 (.w channel) for per-corner DM strength.
-        if params.get('dm_use_attr_strength', False):
+        # Fill smooth_weights_2 (.z/.w channels) for per-corner DM factor/scale.
+        if params.get('dm_use_attr_factor', False) or params.get('dm_use_attr_scale', False):
             self._fill_smooth_weights(m, params)
 
         dm_iterations = params.get('dm_iterations', 10)
-        dm_strength = params.get('dm_strength', 1.0)
+        dm_factor = params.get('dm_factor', 1.0)
+        dm_scale = params.get('dm_scale', 1.0)
         dm_cot_factor = params.get('dm_cotangent_factor', 0.0)
 
         # Set smooth kernel uniforms.
@@ -940,10 +942,19 @@ class Pipeline():
         if 'COTANGENT_FACTOR' in smooth_kernel.uniforms:
             smooth_kernel.uniforms['COTANGENT_FACTOR'].set_value(dm_cot_factor)
 
-        # Ping-pong between deformed_positions (binding 9) and smooth_scratch (binding 15).
+        # Save pre-smooth skinned positions into smooth_prev (binding 26) so the
+        # apply kernel can mix against the original skinned pose, not the smoothed one.
         buf_a = m.deformed_position_buffer[0]  # binding 9
         buf_b = m.smooth_scratch_ssbo.buffer[0]  # binding 15
+        buf_skinned = m.smooth_prev_ssbo.buffer[0]  # binding 26
 
+        glBindBuffer(GL_COPY_READ_BUFFER, buf_a)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, buf_skinned)
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, m.smooth_scratch_ssbo.size)
+        glBindBuffer(GL_COPY_READ_BUFFER, 0)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
+        # Ping-pong between deformed_positions (binding 9) and smooth_scratch (binding 15).
         for s_iter in range(dm_iterations):
             if s_iter % 2 == 0:
                 src_buf, dst_buf = buf_a, buf_b
@@ -966,20 +977,27 @@ class Pipeline():
             glBindBuffer(GL_COPY_READ_BUFFER, 0)
             glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
 
-        # Restore binding 9 to deformed_positions for the apply kernel to write to.
+        # Restore bindings for the apply kernel:
+        # 9 = deformed_positions (write target), 15 = smoothed result, 26 = original skinned.
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m.deformed_position_buffer[0])
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, m.smooth_scratch_ssbo.buffer[0])
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 26, buf_skinned)
 
         # Dispatch apply kernel.
         if 'LOOP_COUNT' in apply_kernel.uniforms:
             apply_kernel.uniforms['LOOP_COUNT'].set_value(m.loop_count)
         if 'VERTEX_COUNT' in apply_kernel.uniforms:
             apply_kernel.uniforms['VERTEX_COUNT'].set_value(m.vertex_count)
-        if 'STRENGTH' in apply_kernel.uniforms:
-            apply_kernel.uniforms['STRENGTH'].set_value(dm_strength)
-        dm_use_attr = params.get('dm_use_attr_strength', False)
-        if 'USE_ATTR_STRENGTH' in apply_kernel.uniforms:
-            apply_kernel.uniforms['USE_ATTR_STRENGTH'].set_value(1 if dm_use_attr else 0)
+        if 'FACTOR' in apply_kernel.uniforms:
+            apply_kernel.uniforms['FACTOR'].set_value(dm_factor)
+        dm_use_attr_factor = params.get('dm_use_attr_factor', False)
+        if 'USE_ATTR_FACTOR' in apply_kernel.uniforms:
+            apply_kernel.uniforms['USE_ATTR_FACTOR'].set_value(1 if dm_use_attr_factor else 0)
+        if 'SCALE' in apply_kernel.uniforms:
+            apply_kernel.uniforms['SCALE'].set_value(dm_scale)
+        dm_use_attr_scale = params.get('dm_use_attr_scale', False)
+        if 'USE_ATTR_SCALE' in apply_kernel.uniforms:
+            apply_kernel.uniforms['USE_ATTR_SCALE'].set_value(1 if dm_use_attr_scale else 0)
 
         apply_kernel.bind()
         apply_kernel.dispatch(workgroups)
